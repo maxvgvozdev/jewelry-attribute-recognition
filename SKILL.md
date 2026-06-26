@@ -107,6 +107,34 @@ If Firecrawl is not configured, the agent will fall back to direct HTTP extracti
 3. Return all 31 parameters in canonical order.
 4. Use exact option values where applicable; otherwise `null`.
 
+## Item Identification
+
+The discovery input is flexible and can include any of these fields:
+
+- `brand`
+- `vendor_item_number`
+- `upc_code`
+- `source_url`
+
+Search priority when multiple identifiers are present:
+
+1. `vendor_item_number`
+2. `upc_code`
+3. both together for cross-confirmation
+
+If only a UPC is provided, prepend brand/generic qualifiers to the query when searching. If only `vendor_item_number` is provided, search by SKU first. If both are provided, attempt both searches and cross-confirm on matching brand/SKU.
+
+## UPC Validation
+
+When input contains `upc_code`:
+
+1. Query `https://www.upcitemdb.com/upc/<upc_code>`
+2. If no record is found or the page indicates no entry, **do not use the UPC for item discovery**.
+3. If `vendor_item_number` is also provided, continue item discovery using that vendor item number and ignore the missing UPC. Flag the missing UPC in `confidence.notes`.
+4. If only `upc_code` is provided with no record, return a clear message: `UPC <upc_code> not found in UPC Item Database (upcitemdb.com).` and stop.
+5. If a record exists, use its findings to cross-confirm or refine product identification before continuing with image/text extraction.
+6. If both `vendor_item_number` and `upc_code` are provided, prefer the vendor item lookup path. Use the UPC result only as confirmation; if the UPC points to a different brand/SKU, flag the mismatch in `confidence.notes`.
+
 ## Brand Site Workflow
 
 When the user provides brand, item number, and a brand site start URL:
@@ -146,36 +174,7 @@ When the user provides brand, item number, and a brand site start URL:
      },
      "attributes": {
        "metal_type": "...",
-       "metal_color": "...",
-       "stone_primary_color": "...",
-       "product_type": "...",
-       "gender": "...",
-       "center_stone_type": "...",
-       "center_stone_shape": "...",
-       "side_stone_1_type": "...",
-       "side_stone_1_shape": "...",
-       "side_stone_2_type": "...",
-       "side_stone_2_shape": "...",
-       "engagement_set_type": "...",
-       "engagement_ring_type": "...",
-       "wedding_band_type": "...",
-       "wedding_band_setting_type": "...",
-       "wedding_band_stone_continuity": "...",
-       "fashion_ring_type": "...",
-       "earring_type": "...",
-       "necklace_type": "...",
-       "bracelet_type": "...",
-       "accessory_type": "...",
-       "theme": "...",
-       "occasion": "...",
-       "jewelry_shape": "...",
-       "motif": "...",
-       "finishing_type": "...",
-       "estate_period": "...",
-       "holiday_code": "...",
-       "chain_type": "...",
-       "clasp_type": "...",
-       "earring_back": "..."
+       ...
      },
      "confidence": {
        "overall": "high | medium | low",
@@ -184,3 +183,14 @@ When the user provides brand, item number, and a brand site start URL:
    }
    ```
 6. **Confidence notes:** When a parameter is inferred rather than explicitly stated, add a confidence indicator in the value string using format: `"value (inferred)"` or `"value (from text)"`. Use `evidence.images` to track which view supported each field when applicable.
+
+## Site Platform Fallbacks & Pitfalls
+
+- **Demandware / Salesforce Commerce Cloud brands (e.g., David Yurman):** `/products/slug.html` and `/en/product/SKU` may return 404. `/search?q=SKU` often returns empty/404 JSON. Do not assume the brand site is the only source of truth.
+- **Authorized retailer fallback:** If the brand PDP is inaccessible, use the Firecrawl `search` tool to locate authorized retailer pages for the exact SKU. Many premium jewelers embed the brand's official CDN images (`static.dy.cloud.bosslogics.com`, etc.) and verified product text. Treat these as trusted secondary sources when:
+  - The retailer page explicitly names the brand and SKU.
+  - Images resolve to the brand's own image subdomain.
+  - Text matches brand-style product descriptions exactly.
+- **Image provenance check:** When using retailer-fallback images, verify the image URL host is the brand's CDN rather than the retailer's own uploads. Brand CDN URLs are stronger evidence.
+- **Resolved URL caveat:** In the output JSON, `resolved_item_url` may point to a retailer page when the brand PDP was unreachable. Note this in `confidence.notes` so downstream users understand provenance.
+- **Text precedence:** Authorized-retailer product text is usually copied from the brand feed. Prefer it over visual inference when it explicitly states metal, stone types, carat weight, or dimensions.
