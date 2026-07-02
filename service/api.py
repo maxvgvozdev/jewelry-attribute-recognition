@@ -145,6 +145,10 @@ class JewelryResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _firecrawl_available() -> bool:
+    return FIRECRAWL_SCRIPT.exists() and FIRECRAWL_SCRIPT.is_file()
+
+
 def _run_firecrawl_search(query: str) -> Dict[str, Any]:
     """Run the bundled Firecrawl proxy search and return parsed JSON."""
     if not FIRECRAWL_SCRIPT.exists():
@@ -204,17 +208,9 @@ def _download_image(url: str, dest: Path) -> str:
 
 
 def _analyze_image(image_path: str, question: str) -> Dict[str, Any]:
-    """
-    Placeholder for vision model call.
-    Replace with your actual vision provider integration (OpenAI GPT-4o, Claude, etc.).
-    """
-    # In production this should call an external vision model.
-    # For now we return a placeholder response so the API remains runnable.
-    return {
-        "image": image_path,
-        "question": question,
-        "analysis": "Vision analysis placeholder. Integrate with your preferred vision provider.",
-    }
+    """Delegate to the local vision client."""
+    from service.vision_client import analyze_image
+    return analyze_image(image_path, question)
 
 
 def _pick_best_images(image_urls: List[str], prefer_cdn_host: Optional[str] = None) -> List[str]:
@@ -345,7 +341,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         else:
             confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
 
-    # 2. Item discovery: prefer vendor_item_number, fallback to broad search
+    # 2. Item discovery: try Firecrawl first when available;
+    #    otherwise fall back to source_url or upcitemdb-derived page.
     if vendor_item_number:
         search_query = f"{brand} {vendor_item_number}"
     elif upc_code:
@@ -353,18 +350,30 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     else:
         raise HTTPException(status_code=400, detail="Either vendor_item_number or upc_code must be provided.")
 
-    try:
-        search_result = _run_firecrawl_search(search_query)
-        items = search_result.get("data", []) or []
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Item search failed: {exc}")
+    items = []
+    resolved_url = ""
 
-    if not items:
-        raise HTTPException(status_code=404, detail="No product pages found for the provided identifiers.")
+    firecrawl_available = _firecrawl_available()
+    if firecrawl_available:
+        try:
+            search_result = _run_firecrawl_search(search_query)
+            items = search_result.get("data", []) or []
+            if items:
+                resolved_url = items[0].get("url", "")
+                page_text = items[0].get("description", "") or ""
+        except Exception as exc:
+            firecrawl_available = False
+            confidence_notes.append(f"Firecrawl search unavailable; using direct HTTP fallback only. ({exc})")
+    else:
+        confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
 
-    # Use the first reasonable result as resolved page
-    resolved_url = items[0].get("url", "")
-    page_text = items[0].get("description", "") or ""
+    if not resolved_url:
+        if source_url:
+            resolved_url = source_url
+        elif upc_code:
+            resolved_url = f"https://www.upcitemdb.com/upc/{upc_code}"
+        else:
+            raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
 
     # 3. Try to scrape the resolved page for richer text and images
     page_text = ""
