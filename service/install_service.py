@@ -4,7 +4,7 @@ import subprocess
 import os
 import win32serviceutil
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
 PYTHONPATH = f"{REPO_ROOT};{os.environ.get('PYTHONPATH', '')}".strip(";")
 sys.path.insert(0, str(REPO_ROOT))
 
