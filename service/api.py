@@ -29,6 +29,11 @@ import win32service
 import win32event
 import servicemanager
 
+try:
+    import uvicorn as _uvicorn
+except Exception:
+    _uvicorn = None  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -499,13 +504,9 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
-        self.server = None
-        self._svc_thread = None
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        if self.server is not None:
-            self.server.should_exit = True
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
@@ -515,47 +516,10 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
                 servicemanager.PYS_SERVICE_STARTED,
                 (self._svc_name_, ""),
             )
-            logger.info("Windows service starting")
-
-            import threading
-            import uvicorn
-
-            self.server = None
-            self._svc_ready = threading.Event()
-            self._svc_fail = None
-
-            def _serve():
-                try:
-                    config = uvicorn.Config(
-                        app,
-                        host=API_HOST,
-                        port=API_PORT,
-                        log_level=LOG_LEVEL.lower(),
-                    )
-                    server = uvicorn.Server(config)
-                    self.server = server
-                    self._svc_ready.set()
-                    server.run()
-                except Exception as exc:
-                    self._svc_fail = exc
-                    self._svc_ready.set()
-                    logger.exception("uvicorn failed: %s", exc)
-
-            self._svc_thread = threading.Thread(target=_serve, name="uvicorn-svc", daemon=True)
-            self._svc_thread.start()
-
-            # Tell SCM we’re alive and may need a moment
-            self.ReportServiceStatus(win32service.SERVICE_START_PENDING, 30000)
-
-            if not self._svc_ready.wait(timeout=30):
-                raise RuntimeError("uvicorn did not initialize within 30s")
-            if self._svc_fail is not None:
-                raise self._svc_fail
-
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-            logger.info("Reported SERVICE_RUNNING to SCM")
+            logger.info("Windows service started, launching uvicorn")
 
-            win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
+            _uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
         except Exception as exc:
             logger.exception("Windows service failed to start: %s", exc)
             raise
