@@ -47,6 +47,24 @@ curl http://localhost:8000/health
 # {"status":"ok","service":"JewelryAgentAPI"}
 ```
 
+## Server deploy checklist
+
+```powershell
+cd C:\Deploy\jewelry-attribute-recognition
+
+# 1) pull latest changes
+git pull origin master
+
+# 2) reinstall and restart service
+cd service
+.\\.venv\Scripts\python.exe install_service.py install
+.\\.venv\Scripts\python.exe install_service.py start
+
+# 3) verify
+sc query JewelryAgentAPI
+curl http://localhost:8000/health
+```
+
 ## Production deployment notes
 
 - Set env vars via System Properties → Advanced → Environment Variables:

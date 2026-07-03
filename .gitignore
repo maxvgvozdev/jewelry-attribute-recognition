@@ -1,6 +1,0 @@
-.env
-firecrawl_config.json
-results/
-.DS_Store
-.vscode/
-.idea/
