@@ -499,16 +499,13 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
-        self.worker: Optional[subprocess.Popen] = None
+        self.server = None
+        self._svc_thread = None
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        if self.worker and self.worker.poll() is None:
-            self.worker.terminate()
-            try:
-                self.worker.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.worker.kill()
+        if self.server is not None:
+            self.server.should_exit = True
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
@@ -519,56 +516,48 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
                 (self._svc_name_, ""),
             )
             logger.info("Windows service starting")
-            cmd = [
-                sys.executable, "-m", "uvicorn",
-                "service.api:app",
-                "--host", API_HOST,
-                "--port", str(API_PORT),
-                "--log-level", LOG_LEVEL.lower(),
-            ]
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            startupinfo = None
-            if hasattr(subprocess, "STARTUPINFO"):
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_FORCEOFFFEEDBACK  # type: ignore[attr-defined]
-            self.worker = subprocess.Popen(
-                cmd,
-                cwd=str(SKILL_ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                startupinfo=startupinfo,
-                bufsize=1,
-                text=True,
-            )
+
+            import threading
+            import uvicorn
+
+            self.server = None
+            self._svc_ready = threading.Event()
+            self._svc_fail = None
+
+            def _serve():
+                try:
+                    config = uvicorn.Config(
+                        app,
+                        host=API_HOST,
+                        port=API_PORT,
+                        log_level=LOG_LEVEL.lower(),
+                    )
+                    server = uvicorn.Server(config)
+                    self.server = server
+                    self._svc_ready.set()
+                    server.run()
+                except Exception as exc:
+                    self._svc_fail = exc
+                    self._svc_ready.set()
+                    logger.exception("uvicorn failed: %s", exc)
+
+            self._svc_thread = threading.Thread(target=_serve, name="uvicorn-svc", daemon=True)
+            self._svc_thread.start()
+
+            # Tell SCM we’re alive and may need a moment
+            self.ReportServiceStatus(win32service.SERVICE_START_PENDING, 30000)
+
+            if not self._svc_ready.wait(timeout=30):
+                raise RuntimeError("uvicorn did not initialize within 30s")
+            if self._svc_fail is not None:
+                raise self._svc_fail
+
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
             logger.info("Reported SERVICE_RUNNING to SCM")
 
-            fail_wait = 0
-            for line in self.worker.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                if fail_wait < 25 and ("Application startup complete" in line or "Uvicorn running on" in line):
-                    fail_wait = 25
-                fail_wait += 1
-                if fail_wait >= 50:
-                    logger.error("uvicorn did not report startup in time; stopping worker")
-                    self.worker.terminate()
-                    try:
-                        self.worker.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        self.worker.kill()
-                    break
-            if self.worker and self.worker.returncode is not None and self.worker.returncode != 0:
-                logger.error("uvicorn exited early with code %s", self.worker.returncode)
+            win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
         except Exception as exc:
             logger.exception("Windows service failed to start: %s", exc)
-            try:
-                if self.worker and self.worker.poll() is None:
-                    self.worker.terminate()
-            except Exception:
-                pass
             raise
 
 
