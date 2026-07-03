@@ -8,7 +8,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 PYTHONPATH = f"{REPO_ROOT};{os.environ.get('PYTHONPATH', '')}".strip(";")
 sys.path.insert(0, str(REPO_ROOT))
 
-from service.api import SERVICE_NAME
+from service.api import SERVICE_NAME, JewelryAPIService
 
 
 def run(cmd, extra_env=None):
@@ -28,9 +28,15 @@ if __name__ == '__main__':
     action = sys.argv[1].lower()
     if action == 'install':
         run([sys.executable, '-c', 'import sys,os; print(sys.path); import service.api'])
-        run([sys.executable, '-m', 'win32serviceutil', 'InstallService', SERVICE_NAME])
+        run([
+            sys.executable, '-c',
+            'import win32serviceutil, service.api; win32serviceutil.InstallServiceClass(service.api.JewelryAPIService, service.api.SERVICE_NAME)'
+        ])
     elif action in ('start', 'stop', 'remove'):
-        run([sys.executable, '-m', 'win32serviceutil', action, SERVICE_NAME])
+        run([
+            sys.executable, '-m', 'win32serviceutil', action, SERVICE_NAME,
+            '--startup', 'auto' if action == 'start' else 'manual'
+        ])
     else:
         print('Unknown action: ' + action)
         sys.exit(1)
