@@ -28,15 +28,9 @@ if __name__ == '__main__':
     action = sys.argv[1].lower()
     if action == 'install':
         run([sys.executable, '-c', 'import sys,os; print(sys.path); import service.api'])
-        run([
-            sys.executable, '-c',
-            'import win32serviceutil, service.api; win32serviceutil.InstallServiceClass(service.api.JewelryAPIService, service.api.SERVICE_NAME)'
-        ])
+        run([sys.executable, str(REPO_ROOT / 'service' / 'api.py'), 'install'])
     elif action in ('start', 'stop', 'remove'):
-        run([
-            sys.executable, '-m', 'win32serviceutil', action, SERVICE_NAME,
-            '--startup', 'auto' if action == 'start' else 'manual'
-        ])
+        run([sys.executable, str(REPO_ROOT / 'service' / 'api.py'), action])
     else:
         print('Unknown action: ' + action)
         sys.exit(1)
