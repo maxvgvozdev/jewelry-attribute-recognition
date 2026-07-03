@@ -503,27 +503,73 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        if self.worker:
+        if self.worker and self.worker.poll() is None:
             self.worker.terminate()
+            try:
+                self.worker.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.worker.kill()
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
-        logger.info("Windows service starting")
-        cmd = [
-            sys.executable, "-m", "uvicorn",
-            "service.api:app",
-            "--host", API_HOST,
-            "--port", str(API_PORT),
-            "--log-level", LOG_LEVEL.lower(),
-        ]
-        self.worker = subprocess.Popen(cmd, cwd=str(SKILL_ROOT))
-        win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
-        logger.info("Windows service stopped")
+        try:
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+            logger.info("Windows service starting")
+            cmd = [
+                sys.executable, "-m", "uvicorn",
+                "service.api:app",
+                "--host", API_HOST,
+                "--port", str(API_PORT),
+                "--log-level", LOG_LEVEL.lower(),
+            ]
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            startupinfo = None
+            if hasattr(subprocess, "STARTUPINFO"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_FORCEOFFFEEDBACK  # type: ignore[attr-defined]
+            self.worker = subprocess.Popen(
+                cmd,
+                cwd=str(SKILL_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                startupinfo=startupinfo,
+                bufsize=1,
+                text=True,
+            )
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            logger.info("Reported SERVICE_RUNNING to SCM")
+
+            fail_wait = 0
+            for line in self.worker.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                if fail_wait < 25 and ("Application startup complete" in line or "Uvicorn running on" in line):
+                    fail_wait = 25
+                fail_wait += 1
+                if fail_wait >= 50:
+                    logger.error("uvicorn did not report startup in time; stopping worker")
+                    self.worker.terminate()
+                    try:
+                        self.worker.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.worker.kill()
+                    break
+            if self.worker and self.worker.returncode is not None and self.worker.returncode != 0:
+                logger.error("uvicorn exited early with code %s", self.worker.returncode)
+        except Exception as exc:
+            logger.exception("Windows service failed to start: %s", exc)
+            try:
+                if self.worker and self.worker.poll() is None:
+                    self.worker.terminate()
+            except Exception:
+                pass
+            raise
 
 
 if __name__ == "__main__":
