@@ -47,6 +47,11 @@ RESULTS_DIR = SKILL_ROOT / "results"
 ARTIFACTS_DIR = SKILL_ROOT / "artifacts"
 FIRECRAWL_SCRIPT = SKILL_ROOT / "scripts" / "firecrawl_proxy.py"
 
+# Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
+# resolve correctly when launched by pywin32's pythonservice.exe.
+if str(SKILL_ROOT) not in sys.path:
+    sys.path.insert(0, str(SKILL_ROOT))
+
 # Ensure directories exist
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
