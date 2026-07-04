@@ -35,22 +35,37 @@ except Exception:
     _uvicorn = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
+# Module-level trace for SCM startup diagnosis
+# ---------------------------------------------------------------------------
+_SVC_TRACE_PATH = os.path.join(tempfile.gettempdir(), "jewelry_svc_trace.log")
+
+def _svc_trace(msg: str) -> None:
+    try:
+        with open(_SVC_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVICE_NAME = "JewelryAgentAPI"
 SERVICE_DISPLAY_NAME = "Jewelry Attribute Recognition API"
 SERVICE_DESCRIPTION = "API service exposing jewelry attribute recognition to Microsoft Business Central"
+_svc_trace("module constants defined")
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 REFERENCES_DIR = SKILL_ROOT / "references"
 RESULTS_DIR = SKILL_ROOT / "results"
 ARTIFACTS_DIR = SKILL_ROOT / "artifacts"
 FIRECRAWL_SCRIPT = SKILL_ROOT / "scripts" / "firecrawl_proxy.py"
+_svc_trace(f"SKILL_ROOT={SKILL_ROOT}, dirs defined")
 
 # Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
 # resolve correctly when launched by pywin32's pythonservice.exe.
 if str(SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_ROOT))
+_svc_trace(f"sys.path injected, SKILL_ROOT={SKILL_ROOT}")
 
 # Ensure directories exist
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
