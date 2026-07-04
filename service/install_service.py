@@ -17,6 +17,13 @@ def _ensure_repo_root_on_sys_path() -> None:
     if not pth.exists():
         pth.write_text(str(REPO_ROOT) + "\n", encoding="utf-8")
 
+def _get_pythonservice_exe() -> str:
+    """Determine the correct path to pythonservice.exe in the venv."""
+    venv_root = pathlib.Path(sys.executable).resolve().parent.parent
+    exe_path = venv_root / "pythonservice.exe"
+    if not exe_path.exists():
+        exe_path = pathlib.Path(win32service.__file__).parent / "pythonservice.exe"
+    return str(exe_path)
 
 def run(cmd, extra_env=None):
     env = os.environ.copy()
@@ -42,6 +49,7 @@ if __name__ == '__main__':
             displayName=SERVICE_DISPLAY_NAME,
             description=SERVICE_DESCRIPTION,
             startType=win32service.SERVICE_AUTO_START,
+            exeName=_get_pythonservice_exe(),  # <-- THIS WAS MISSING
         )
     elif action in ('start', 'stop', 'remove'):
         win32serviceutil.HandleCommandLine(JewelryAPIService)
