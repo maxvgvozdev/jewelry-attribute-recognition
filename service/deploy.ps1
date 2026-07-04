@@ -1,23 +1,28 @@
 # deploy.ps1 - Run this on the server to pull updates and restart the service
  $ErrorActionPreference = "Stop"
 
-Write-Host "1. Stopping existing service..." -ForegroundColor Cyan
-.\.venv\Scripts\python.exe api.py stop 2>$null
+Write-Host "1. Stopping existing scheduled task..." -ForegroundColor Cyan
+Stop-ScheduledTask -TaskName "JewelryAgentAPI" -ErrorAction SilentlyContinue
 
 Write-Host "2. Pulling latest code from GitHub..." -ForegroundColor Cyan
 git pull origin master
 
-Write-Host "3. Removing old service registration (to sync registry)..." -ForegroundColor Cyan
-.\.venv\Scripts\python.exe api.py remove 2>$null
+Write-Host "3. Waiting for process to fully exit..." -ForegroundColor Cyan
+Start-Sleep -Seconds 2
 
-Write-Host "4. Installing service..." -ForegroundColor Cyan
-.\.venv\Scripts\python.exe api.py install
+Write-Host "4. Starting scheduled task..." -ForegroundColor Cyan
+Start-ScheduledTask -TaskName "JewelryAgentAPI"
 
-Write-Host "5. Starting service..." -ForegroundColor Cyan
-.\.venv\Scripts\python.exe api.py start
-
-Write-Host "6. Waiting for startup..." -ForegroundColor Cyan
-Start-Sleep -Seconds 5
+Write-Host "5. Waiting for startup..." -ForegroundColor Cyan
+Start-Sleep -Seconds 4
 
 Write-Host "Final Service Status:" -ForegroundColor Green
-sc.exe query JewelryAgentAPI
+Get-ScheduledTask -TaskName "JewelryAgentAPI" | Select-Object TaskName, State
+
+Write-Host "Health Check:" -ForegroundColor Green
+try {
+    $health = Invoke-RestMethod -Uri "http://localhost:8000/health" -UseBasicParsing -TimeoutSec 5
+    Write-Host $health -ForegroundColor Green
+} catch {
+    Write-Host "API not responding yet." -ForegroundColor Yellow
+}
