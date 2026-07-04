@@ -8,7 +8,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 PYTHONPATH = f"{REPO_ROOT};{os.environ.get('PYTHONPATH', '')}".strip(";")
 sys.path.insert(0, str(REPO_ROOT))
 
-from service.api import SERVICE_NAME, JewelryAPIService
+from service.api import SERVICE_NAME, SERVICE_DISPLAY_NAME, SERVICE_DESCRIPTION, JewelryAPIService
 
 
 def run(cmd, extra_env=None):
