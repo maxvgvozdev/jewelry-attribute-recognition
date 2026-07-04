@@ -29,11 +29,12 @@ if __name__ == '__main__':
     action = sys.argv[1].lower()
     if action == 'install':
         print('Installing service', SERVICE_NAME)
-        win32serviceutil.InstallPythonClassString(
-            'service.api.JewelryAPIService',
-            SERVICE_NAME,
-            SERVICE_DISPLAY_NAME,
-            win32service.SERVICE_AUTO_START,
+        win32serviceutil.InstallService(
+            pythonClassString='service.api.JewelryAPIService',
+            serviceName=SERVICE_NAME,
+            displayName=SERVICE_DISPLAY_NAME,
+            description=SERVICE_DESCRIPTION,
+            startType=win32service.SERVICE_AUTO_START,
         )
     elif action in ('start', 'stop', 'remove'):
         win32serviceutil.HandleCommandLine(JewelryAPIService)
