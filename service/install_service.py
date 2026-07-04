@@ -33,8 +33,7 @@ if __name__ == '__main__':
             'service.api.JewelryAPIService',
             SERVICE_NAME,
             SERVICE_DISPLAY_NAME,
-            description=SERVICE_DESCRIPTION,
-            startType=win32service.SERVICE_AUTO_START,
+            win32service.SERVICE_AUTO_START,
         )
     elif action in ('start', 'stop', 'remove'):
         win32serviceutil.HandleCommandLine(JewelryAPIService)
