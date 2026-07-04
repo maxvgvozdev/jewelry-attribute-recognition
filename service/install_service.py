@@ -12,6 +12,12 @@ sys.path.insert(0, str(REPO_ROOT))
 from service.api import SERVICE_NAME, SERVICE_DISPLAY_NAME, SERVICE_DESCRIPTION, JewelryAPIService
 
 
+def _ensure_repo_root_on_sys_path() -> None:
+    pth = pathlib.Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages" / "repo_root.pth"
+    if not pth.exists():
+        pth.write_text(str(REPO_ROOT) + "\n", encoding="utf-8")
+
+
 def run(cmd, extra_env=None):
     env = os.environ.copy()
     env["PYTHONPATH"] = PYTHONPATH
@@ -29,6 +35,7 @@ if __name__ == '__main__':
     action = sys.argv[1].lower()
     if action == 'install':
         print('Installing service', SERVICE_NAME)
+        _ensure_repo_root_on_sys_path()
         win32serviceutil.InstallService(
             pythonClassString='service.api.JewelryAPIService',
             serviceName=SERVICE_NAME,
