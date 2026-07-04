@@ -516,16 +516,28 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
 
     def SvcDoRun(self):
         try:
+            import tempfile, os
+            self._trace = os.path.join(tempfile.gettempdir(), "jewelry_svc_trace.log")
+            with open(self._trace, "a", encoding="utf-8") as f:
+                f.write("SvcDoRun START\n")
+            
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
                 servicemanager.PYS_SERVICE_STARTED,
                 (self._svc_name_, ""),
             )
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            with open(self._trace, "a", encoding="utf-8") as f:
+                f.write("SERVICE_RUNNING reported\n")
             logger.info("Windows service started, launching uvicorn")
 
             _uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
         except Exception as exc:
+            try:
+                with open(self._trace, "a", encoding="utf-8") as f:
+                    f.write(f"EXCEPTION: {exc!r}\n")
+            except Exception:
+                pass
             logger.exception("Windows service failed to start: %s", exc)
             raise
 
