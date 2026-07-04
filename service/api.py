@@ -5,7 +5,7 @@ via a REST API endpoint.
 
 Run (development): uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 Run (production): python service_runner.py
-Install as Windows service: python install_service.py install
+Install as Windows service: python api.py install
 """
 
 import os
@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import win32serviceutil
 import win32service
 import win32event
@@ -35,37 +35,22 @@ except Exception:
     _uvicorn = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
-# Module-level trace for SCM startup diagnosis
-# ---------------------------------------------------------------------------
-_SVC_TRACE_PATH = os.path.join(tempfile.gettempdir(), "jewelry_svc_trace.log")
-
-def _svc_trace(msg: str) -> None:
-    try:
-        with open(_SVC_TRACE_PATH, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
-
-# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVICE_NAME = "JewelryAgentAPI"
 SERVICE_DISPLAY_NAME = "Jewelry Attribute Recognition API"
 SERVICE_DESCRIPTION = "API service exposing jewelry attribute recognition to Microsoft Business Central"
-_svc_trace("module constants defined")
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 REFERENCES_DIR = SKILL_ROOT / "references"
 RESULTS_DIR = SKILL_ROOT / "results"
 ARTIFACTS_DIR = SKILL_ROOT / "artifacts"
 FIRECRAWL_SCRIPT = SKILL_ROOT / "scripts" / "firecrawl_proxy.py"
-_svc_trace(f"SKILL_ROOT={SKILL_ROOT}, dirs defined")
 
 # Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
 # resolve correctly when launched by pywin32's pythonservice.exe.
 if str(SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_ROOT))
-_svc_trace(f"sys.path injected, SKILL_ROOT={SKILL_ROOT}")
 
 # Ensure directories exist
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,12 +80,13 @@ logger.addHandler(handler)
 # Pydantic models (Business Central payload / response)
 # ---------------------------------------------------------------------------
 class JewelryRequest(BaseModel):
-    brand: str = Field(..., example="David Yurman")
-    vendor_item_number: str = Field("", example="B18729D88APRDIM")
-    upc_code: str = Field("", example="192740527920")
-    source_url: str = Field("https://www.davidyurman.com/", example="https://www.davidyurman.com/")
+    brand: str = Field(..., json_schema_extra={"examples": ["David Yurman"]})
+    vendor_item_number: str = Field("", json_schema_extra={"examples": ["B18729D88APRDIM"]})
+    upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
+    source_url: str = Field("https://www.davidyurman.com/", json_schema_extra={"examples": ["https://www.davidyurman.com/"]})
 
-    @validator("vendor_item_number", "upc_code", pre=True)
+    @field_validator("vendor_item_number", "upc_code", mode="before")
+    @classmethod
     def _empty_to_str(cls, v):
         if v is None:
             return ""
@@ -203,10 +189,8 @@ def _check_upc(upc_code: str) -> Dict[str, Any]:
         resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         html = resp.text
-        # Simple heuristic check for "no record" phrase
         if "currently has no record in our database" in html:
             return {"found": False, "url": url}
-        # Try to extract title from meta / heading
         import re
         title_m = re.search(r"<title>\s*UPC\s+\d+\s*-\s*(.*?)\s*\|\s*upcitemdb\.com\s*</title>", html)
         title = title_m.group(1).strip() if title_m else ""
@@ -255,14 +239,9 @@ def _build_attributes_from_text_and_vision(
     vision_results: List[Dict[str, Any]],
     item_number: str,
 ) -> Dict[str, Any]:
-    """
-    Merge text + vision into the 31-parameter attribute set.
-    This is intentionally simplified; extend with your reference taxonomy logic.
-    """
     text_lower = (text or "").lower()
     attrs: Dict[str, Any] = {}
 
-    # Metal
     if "yellow gold" in text_lower or "18k yellow gold" in text_lower:
         attrs["metal_type"] = "18K Yellow Gold"
         attrs["metal_color"] = "Yellow"
@@ -276,7 +255,6 @@ def _build_attributes_from_text_and_vision(
         attrs["metal_type"] = None
         attrs["metal_color"] = None
 
-    # Product type heuristic
     if "bracelet" in text_lower or "bracelet" in (item_number or "").lower():
         attrs["product_type"] = "Bracelets"
     elif "ring" in text_lower or "ring" in (item_number or "").lower() or item_number.startswith(("R", "B")):
@@ -288,7 +266,6 @@ def _build_attributes_from_text_and_vision(
     else:
         attrs["product_type"] = None
 
-    # Gender heuristic
     if "men's" in text_lower or " men " in text_lower:
         attrs["gender"] = "Men's"
     elif "women's" in text_lower or " women " in text_lower:
@@ -296,37 +273,16 @@ def _build_attributes_from_text_and_vision(
     else:
         attrs["gender"] = None
 
-    # Gemstones (very simplified)
     attrs.update({
-        "stone_primary_color": None,
-        "center_stone_type": None,
-        "center_stone_shape": None,
-        "side_stone_1_type": None,
-        "side_stone_1_shape": None,
-        "side_stone_2_type": None,
-        "side_stone_2_shape": None,
-        "engagement_set_type": None,
-        "engagement_ring_type": None,
-        "wedding_band_type": None,
-        "wedding_band_setting_type": None,
-        "wedding_band_stone_continuity": None,
-        "fashion_ring_type": None,
-        "earring_type": None,
-        "necklace_type": None,
-        "bracelet_type": None,
-        "accessory_type": None,
-        "theme": None,
-        "occasion": None,
-        "jewelry_shape": None,
-        "motif": None,
-        "finishing_type": None,
-        "estate_period": None,
-        "holiday_code": None,
-        "chain_type": None,
-        "clasp_type": None,
-        "earring_back": None,
+        "stone_primary_color": None, "center_stone_type": None, "center_stone_shape": None,
+        "side_stone_1_type": None, "side_stone_1_shape": None, "side_stone_2_type": None,
+        "side_stone_2_shape": None, "engagement_set_type": None, "engagement_ring_type": None,
+        "wedding_band_type": None, "wedding_band_setting_type": None, "wedding_band_stone_continuity": None,
+        "fashion_ring_type": None, "earring_type": None, "necklace_type": None, "bracelet_type": None,
+        "accessory_type": None, "theme": None, "occasion": None, "jewelry_shape": None,
+        "motif": None, "finishing_type": None, "estate_period": None, "holiday_code": None,
+        "chain_type": None, "clasp_type": None, "earring_back": None,
     })
-
     return attrs
 
 
@@ -335,10 +291,6 @@ def _build_attributes_from_text_and_vision(
 # ---------------------------------------------------------------------------
 
 def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
-    """
-    Execute the jewelry recognition workflow end-to-end.
-    Keep this in sync with the SKILL.md rules.
-    """
     brand = payload.brand.strip()
     vendor_item_number = payload.vendor_item_number.strip()
     upc_code = payload.upc_code.strip()
@@ -351,23 +303,15 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     text = ""
     item_number = vendor_item_number
 
-    # 1. UPC validation
     if upc_code:
         upc_result = _check_upc(upc_code)
         if not upc_result.get("found"):
             if not vendor_item_number:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"UPC {upc_code} not found in UPC Item Database (upcitemdb.com).",
-                )
-            confidence_notes.append(
-                f"UPC {upc_code} is not present in UPC Item Database; item discovery continued using vendor_item_number."
-            )
+                raise HTTPException(status_code=404, detail=f"UPC {upc_code} not found in UPC Item Database (upcitemdb.com).")
+            confidence_notes.append(f"UPC {upc_code} is not present in UPC Item Database; item discovery continued using vendor_item_number.")
         else:
             confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
 
-    # 2. Item discovery: try Firecrawl first when available;
-    #    otherwise fall back to source_url or upcitemdb-derived page.
     if vendor_item_number:
         search_query = f"{brand} {vendor_item_number}"
     elif upc_code:
@@ -400,7 +344,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         else:
             raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
 
-    # 3. Try to scrape the resolved page for richer text and images
     page_text = ""
     image_urls: List[str] = []
     try:
@@ -416,7 +359,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             page_resp.raise_for_status()
             html = page_resp.text
             page_text = f"{items[0].get('title', '')} {items[0].get('description', '')} {html[:2000]}"
-            # Very naive image extraction
             import re
             image_urls = re.findall(r"https?://[^\s\"'>]+\.(?:jpg|jpeg|png)", html)
         except Exception as exc:
@@ -424,7 +366,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             confidence_notes.append(f"Direct page scrape failed for {resolved_url}; using search snippet only.")
             page_text = f"{items[0].get('title', '')} {items[0].get('description', '')}"
 
-    # 4. Download images and run vision analysis
     chosen = _pick_best_images(image_urls, prefer_cdn_host="davidyurman" if "davidyurman" in host else None)
     if not chosen:
         confidence_notes.append("No downloadable images found from resolved page; attributes may be text-only.")
@@ -438,41 +379,20 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             local_path = _download_image(img_url, local_name)
             vision = _analyze_image(local_path, f"{view_type} view analysis for {brand} {item_number}")
             vision_results.append(vision)
-            images.append(
-                ImageEvidence(
-                    url=img_url,
-                    view_type=view_type,
-                    alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}",
-                )
-            )
+            images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
         except Exception as exc:
             logger.warning("Image handling failed for %s: %s", img_url, exc)
 
-    # 5. Build attributes
     combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
     attrs_dict = _build_attributes_from_text_and_vision(brand, combined_text, vision_results, item_number or upc_code)
 
-    # 6. Package response
-    response = {
-        "item": {
-            "brand": brand,
-            "vendor_item_number": vendor_item_number,
-            "upc_code": upc_code,
-            "source_url": source_url,
-            "resolved_item_url": resolved_url,
-        },
-        "evidence": {
-            "images": [img.dict() for img in images],
-            "text": combined_text[:2000],
-        },
+    return {
+        "item": {"brand": brand, "vendor_item_number": vendor_item_number, "upc_code": upc_code, "source_url": source_url, "resolved_item_url": resolved_url},
+        "evidence": {"images": [img.dict() for img in images], "text": combined_text[:2000]},
         "attributes": attrs_dict,
         "lookup": lookup.dict(),
-        "confidence": {
-            "overall": "high" if images else "low",
-            "notes": confidence_notes,
-        },
+        "confidence": {"overall": "high" if images else "low", "notes": confidence_notes},
     }
-    return response
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +405,6 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Jewelry Agent API shutting down")
 
-
 app = FastAPI(
     title="Jewelry Attribute Recognition API",
     description="Exposes jewelry recognition workflow for Microsoft Business Central",
@@ -493,11 +412,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": SERVICE_NAME}
-
 
 @app.post("/api/jewelry/recognize", response_model=JewelryResponse)
 async def recognize(req: JewelryRequest):
@@ -524,42 +441,67 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
+        self._uvicorn_server = None
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
         try:
-            import tempfile, os
+            # Trace log (your addition - great for debugging)
             self._trace = os.path.join(tempfile.gettempdir(), "jewelry_svc_trace.log")
             with open(self._trace, "a", encoding="utf-8") as f:
-                f.write("SvcDoRun START\n")
-            
+                f.write(f"SvcDoRun START at {datetime.utcnow()}\n")
+
+            # Fix working directory
+            service_dir = Path(__file__).resolve().parent
+            os.chdir(service_dir)
+            if service_dir not in sys.path:
+                sys.path.insert(0, str(service_dir))
+
+            with open(self._trace, "a", encoding="utf-8") as f:
+                f.write(f"CWD set to {os.getcwd()}\n")
+
+            if _uvicorn is None:
+                raise RuntimeError("uvicorn could not be imported.")
+
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
                 servicemanager.PYS_SERVICE_STARTED,
                 (self._svc_name_, ""),
             )
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            
             with open(self._trace, "a", encoding="utf-8") as f:
                 f.write("SERVICE_RUNNING reported\n")
+                
             logger.info("Windows service started, launching uvicorn")
 
-            _uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
+            # Use Server object for graceful stop
+            config = _uvicorn.Config(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
+            self._uvicorn_server = _uvicorn.Server(config)
+            self._uvicorn_server.run()
+
         except Exception as exc:
+            tb = traceback.format_exc()
             try:
                 with open(self._trace, "a", encoding="utf-8") as f:
-                    f.write(f"EXCEPTION: {exc!r}\n")
+                    f.write(f"EXCEPTION:\n{tb}\n")
+            except Exception:
+                pass
+            try:
+                servicemanager.LogErrorMsg(f"Service failed: {exc}\n{tb}")
             except Exception:
                 pass
             logger.exception("Windows service failed to start: %s", exc)
+            self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32service.SERVICE_ERROR_SEVERE)
             raise
-
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        # Run as console app for debugging
         import uvicorn
         uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
     else:
