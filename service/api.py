@@ -358,14 +358,18 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             page_resp = requests.get(resolved_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
             page_resp.raise_for_status()
             html = page_resp.text
-            page_text = f"{items[0].get('title', '')} {items[0].get('description', '')} {html[:2000]}"
+            # Safely get snippet if Firecrawl was used, otherwise just use HTML
+            snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
+            page_text = f"{snippet} {html[:2000]}"
+            # Very naive image extraction
             import re
             image_urls = re.findall(r"https?://[^\s\"'>]+\.(?:jpg|jpeg|png)", html)
         except Exception as exc:
             logger.warning("Page scrape failed: %s", exc)
             confidence_notes.append(f"Direct page scrape failed for {resolved_url}; using search snippet only.")
-            page_text = f"{items[0].get('title', '')} {items[0].get('description', '')}"
-
+            snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
+            page_text = snippet
+                
     chosen = _pick_best_images(image_urls, prefer_cdn_host="davidyurman" if "davidyurman" in host else None)
     if not chosen:
         confidence_notes.append("No downloadable images found from resolved page; attributes may be text-only.")
