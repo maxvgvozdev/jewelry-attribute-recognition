@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import logging
+import re
 import tempfile
 import subprocess
 import traceback
