@@ -367,7 +367,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
 # Matches standard .jpg/.png AND modern e-commerce URLs with no extensions (e.g., ?wid=400)
             image_urls = re.findall(r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png)(?:\?[^\s\"'<>]*)?", html)
             if not image_urls:
-                image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)        except Exception as exc:
+                image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)
+            except Exception as exc:
             logger.warning("Page scrape failed: %s", exc)
             confidence_notes.append(f"Direct page scrape failed for {resolved_url}; using search snippet only.")
             snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
