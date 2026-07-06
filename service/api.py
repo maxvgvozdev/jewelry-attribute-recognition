@@ -324,6 +324,9 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     resolved_url = ""
 
     firecrawl_available = _firecrawl_available()
+    firecrawl_gave_html = False
+    image_urls = []
+    
     if firecrawl_available:
         try:
             search_result = _run_firecrawl_search(search_query)
@@ -331,6 +334,20 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             if items:
                 resolved_url = items[0].get("url", "")
                 page_text = items[0].get("description", "") or ""
+                
+                # If Firecrawl successfully scraped the rendered HTML, use it!
+                if items[0].get("rendered_html"):
+                    firecrawl_gave_html = True
+                    html = items[0]["rendered_html"]
+                    snippet = f"{items[0].get('title', '')} {page_text}"
+                    page_text = f"{snippet} {html[:5000]}"
+                    confidence_notes.append("Used Firecrawl headless browser to render JavaScript images.")
+                    
+                    # Extract images from the rendered HTML immediately
+                    image_urls = re.findall(r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png)(?:\?[^\s\"'<>]*)?", html)
+                    if not image_urls:
+                        image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)
+                    
         except Exception as exc:
             firecrawl_available = False
             confidence_notes.append(f"Firecrawl search unavailable; using direct HTTP fallback only. ({exc})")
@@ -354,7 +371,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     except Exception:
         host = ""
 
-    if resolved_url:
+    # Only do raw Python requests.get() if Firecrawl DIDN'T already give us rendered HTML
+    if resolved_url and not firecrawl_gave_html:
         try:
             page_resp = requests.get(resolved_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
             page_resp.raise_for_status()
