@@ -324,7 +324,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     resolved_url = ""
 
     firecrawl_available = _firecrawl_available()
-    firecrawl_gave_html = False
     image_urls = []
     
     if firecrawl_available:
@@ -335,18 +334,13 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
                 resolved_url = items[0].get("url", "")
                 page_text = items[0].get("description", "") or ""
                 
-                # If Firecrawl successfully scraped the rendered HTML, use it!
-                if items[0].get("rendered_html"):
-                    firecrawl_gave_html = True
-                    html = items[0]["rendered_html"]
-                    snippet = f"{items[0].get('title', '')} {page_text}"
-                    page_text = f"{snippet} {html[:5000]}"
-                    confidence_notes.append("Used Firecrawl headless browser to render JavaScript images.")
-                    
-                    # Extract images from the rendered HTML immediately
-                    image_urls = re.findall(r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png)(?:\?[^\s\"'<>]*)?", html)
-                    if not image_urls:
-                        image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)
+                # If Firecrawl V2 successfully extracted images, use them directly!
+                firecrawl_images = items[0].get("images", [])
+                if firecrawl_images:
+                    image_urls = firecrawl_images
+                    confidence_notes.append("Extracted product images via Firecrawl V2 Markdown parsing.")
+                else:
+                    confidence_notes.append("Firecrawl found page but extracted 0 matching images.")
                     
         except Exception as exc:
             firecrawl_available = False
@@ -371,8 +365,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     except Exception:
         host = ""
 
-    # Only do raw Python requests.get() if Firecrawl DIDN'T already give us rendered HTML
-    if resolved_url and not firecrawl_gave_html:
+    # Only do raw Python fallback scrape if Firecrawl didn't find any images
+    if resolved_url and not image_urls:
         try:
             page_resp = requests.get(resolved_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
             page_resp.raise_for_status()
