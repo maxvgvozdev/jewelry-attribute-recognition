@@ -66,55 +66,59 @@ def main():
 
         # Step 1: Search via Firecrawl V2
         try:
-            search_payload = {
-                "query": query,
-                "limit": 15,
-                "sources": ["web"],
-                "country": "US",
-                "timeout": 30000
-            }
-            search_resp = requests.post(f"{base_url}/search", headers=headers, json=search_payload, timeout=60)
-            search_resp.raise_for_status()
-            search_data = search_resp.json()
-            
-            web_results = search_data.get("data", {}).get("web", [])
-            
-            # Filter out search/category/blog pages
-            valid_results = []
-            for result in web_results:
-                if isinstance(result, dict):
-                    page_url = result.get("url", "")
-                    if not any(kw in page_url.lower() for kw in ['/search?', '/category/', '/collections/', '/blog', '/news']):
-                        valid_results.append(result)
-            
-            # Priority 1: Official site with exact SKU in URL
+            # Build a list of queries. Prioritize the official site if we know it.
+            search_queries = [query]
             if official_domains:
-                for result in valid_results:
-                    page_url = result.get("url", "")
-                    if sku_lower and sku_lower in page_url.lower():
-                        if any(domain in page_url for domain in official_domains):
+                # Prepend a targeted site search (e.g., "site:www.davidyurman.com David Yurman R18647D88ADI")
+                search_queries.insert(0, f"site:{official_domains[0]} {query}")
+
+            for search_query in search_queries:
+                search_payload = {
+                    "query": search_query,
+                    "limit": 10,
+                    "sources": ["web"],
+                    "country": "US",
+                    "timeout": 30000
+                }
+                
+                search_resp = requests.post(f"{base_url}/search", headers=headers, json=search_payload, timeout=60)
+                search_resp.raise_for_status()
+                search_data = search_resp.json()
+                
+                web_results = search_data.get("data", {}).get("web", [])
+                
+                # Filter out search/category/blog pages
+                valid_results = []
+                for result in web_results:
+                    if isinstance(result, dict):
+                        page_url = result.get("url", "")
+                        if not any(kw in page_url.lower() for kw in ['/search?', '/category/', '/collections/', '/blog', '/news']):
+                            valid_results.append(result)
+                
+                # Priority 1: Official site with exact SKU in URL
+                if official_domains:
+                    for result in valid_results:
+                        page_url = result.get("url", "")
+                        if sku_lower and sku_lower in page_url.lower():
+                            if any(domain in page_url for domain in official_domains):
+                                product_page_url = page_url
+                                break
+                                
+                # Priority 2: Any site with exact SKU in URL
+                if not product_page_url:
+                    for result in valid_results:
+                        page_url = result.get("url", "")
+                        if sku_lower and sku_lower in page_url.lower():
                             product_page_url = page_url
                             break
-                            
-            # Priority 2: Any site with exact SKU in URL
-            if not product_page_url:
-                for result in valid_results:
-                    page_url = result.get("url", "")
-                    if sku_lower and sku_lower in page_url.lower():
-                        product_page_url = page_url
-                        break
 
-            # Priority 3: First valid result
-            if not product_page_url and valid_results:
-                product_page_url = valid_results[0].get("url")
+                # Priority 3: First valid result
+                if not product_page_url and valid_results:
+                    product_page_url = valid_results[0].get("url")
 
-        except Exception as e:
-            print(json.dumps({"error": f"Firecrawl search failed: {str(e)}"}))
-            sys.exit(1)
-
-        if not product_page_url:
-            print(json.dumps({"data": []}))
-            return
+                # If we found a URL, stop searching
+                if product_page_url:
+                    break
 
         # Step 2: Scrape the page for images using Firecrawl V2 Markdown
         try:
