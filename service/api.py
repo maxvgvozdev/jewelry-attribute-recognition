@@ -357,7 +357,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
 
     page_text = ""
-    image_urls: List[str] = []
     try:
         from urllib.parse import urlparse
         parsed = urlparse(resolved_url)
