@@ -66,10 +66,9 @@ def main():
 
         # Step 1: Search via Firecrawl V2
         try:
-            # Build a list of queries. Prioritize the official site if we know it.
+            # Build queries: prioritize official site if known
             search_queries = [query]
             if official_domains:
-                # Prepend a targeted site search (e.g., "site:www.davidyurman.com David Yurman R18647D88ADI")
                 search_queries.insert(0, f"site:{official_domains[0]} {query}")
 
             for search_query in search_queries:
@@ -80,7 +79,6 @@ def main():
                     "country": "US",
                     "timeout": 30000
                 }
-                
                 search_resp = requests.post(f"{base_url}/search", headers=headers, json=search_payload, timeout=60)
                 search_resp.raise_for_status()
                 search_data = search_resp.json()
@@ -96,7 +94,7 @@ def main():
                             valid_results.append(result)
                 
                 # Priority 1: Official site with exact SKU in URL
-                if official_domains:
+                if official_domains and not product_page_url:
                     for result in valid_results:
                         page_url = result.get("url", "")
                         if sku_lower and sku_lower in page_url.lower():
@@ -119,7 +117,10 @@ def main():
                 # If we found a URL, stop searching
                 if product_page_url:
                     break
-
+        except Exception as e:
+            print(json.dumps({"error": f"Firecrawl search failed: {str(e)}"}))
+            sys.exit(1)    
+    
         # Step 2: Scrape the page for images using Firecrawl V2 Markdown
         try:
             scrape_payload = {
