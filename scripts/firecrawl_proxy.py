@@ -158,10 +158,18 @@ def main():
                 if any(kw in url_lower for kw in ['library', 'shared', 'gradient']):
                     continue
                     
-                # Strictly require SKU in image URL to prevent generic banners
-                if sku_lower and base_sku:
-                    if base_sku not in url_lower and sku_lower not in url_lower:
+                # Require SKU in image URL to prevent generic banners
+                if sku_lower:
+                    # Check full SKU first, then base SKU as fallback
+                    is_match = sku_lower in url_lower
+                    if not is_match and base_sku:
+                        is_match = base_sku in url_lower
+                    if not is_match:
                         continue 
+                
+                # Filter out tiny thumbnail images (e.g., .th.jpg)
+                if '.th.' in url_lower or '/th.' in url_lower:
+                    continue
                 
                 clean_images.append(img_url)
                 seen_urls.add(img_url)
