@@ -1,6 +1,7 @@
 """
 Firecrawl V2 proxy script.
-Searches for a product page, scrapes it with JS rendering, and extracts images from Markdown.
+Searches for a product page, prioritizing official brand sites,
+scrapes it with JS rendering, and extracts images from Markdown.
 Usage: python firecrawl_proxy.py search "<query>"
 """
 import sys
@@ -9,8 +10,19 @@ import os
 import re
 import requests
 
+# Map of brand keywords to their official website domains (from working logic)
+OFFICIAL_SITES = {
+    'cartier': ['www.cartier.com'],
+    'tiffany': ['www.tiffany.com', 'www.tiffany.ca'],
+    'vancleef': ['www.vancleefarpels.com'],
+    'van cleef': ['www.vancleefarpels.com'],
+    'yurman': ['www.davidyurman.com', 'media.davidyurman.com'],
+    'david yurman': ['www.davidyurman.com', 'media.davidyurman.com'],
+    'brilliant earth': ['www.brilliantearth.com'],
+}
+
 def get_base_sku(sku: str) -> str:
-    """Extracts base part of SKU before color/size suffixes (e.g., B18474D88ADI -> B18474D88)"""
+    """Extracts base part of SKU before color/size suffixes"""
     if not sku:
         return ""
     base = re.split(r'[-_]?(ADI|AAM|DI|AM|PLAT|WG|YG|RG|\d+K|\d+KT|\d+KY)$', sku, flags=re.IGNORECASE)[0]
@@ -37,19 +49,26 @@ def main():
 
     if command == "search":
         product_page_url = None
-        search_data = {}
         
-        # Extract likely SKU from query to match in URLs
+        # Extract brand and SKU from query
         words = query.split()
+        brand_guess = words[0].lower() if words else ""
         sku = words[-1] if len(words) > 1 else ""
         base_sku = get_base_sku(sku)
         sku_lower = sku.lower()
 
-        # Step 1: Search for the product page
+        # Find official domains for this brand
+        official_domains = []
+        for key, domains in OFFICIAL_SITES.items():
+            if key in brand_guess or brand_guess in key:
+                official_domains = domains
+                break
+
+        # Step 1: Search via Firecrawl V2
         try:
             search_payload = {
                 "query": query,
-                "limit": 10,
+                "limit": 15,
                 "sources": ["web"],
                 "country": "US",
                 "timeout": 30000
@@ -60,18 +79,34 @@ def main():
             
             web_results = search_data.get("data", {}).get("web", [])
             
-            # Filter out search/category pages, prioritize URLs containing the SKU
+            # Filter out search/category/blog pages
+            valid_results = []
             for result in web_results:
                 if isinstance(result, dict):
                     page_url = result.get("url", "")
+                    if not any(kw in page_url.lower() for kw in ['/search?', '/category/', '/collections/', '/blog', '/news']):
+                        valid_results.append(result)
+            
+            # Priority 1: Official site with exact SKU in URL
+            if official_domains:
+                for result in valid_results:
+                    page_url = result.get("url", "")
                     if sku_lower and sku_lower in page_url.lower():
-                        if not any(kw in page_url.lower() for kw in ['/search?', '/category/', '/collections/', 'blog', 'news']):
+                        if any(domain in page_url for domain in official_domains):
                             product_page_url = page_url
                             break
                             
-            # Fallback to first result if no exact SKU match found in URL
-            if not product_page_url and web_results:
-                 product_page_url = web_results[0].get("url")
+            # Priority 2: Any site with exact SKU in URL
+            if not product_page_url:
+                for result in valid_results:
+                    page_url = result.get("url", "")
+                    if sku_lower and sku_lower in page_url.lower():
+                        product_page_url = page_url
+                        break
+
+            # Priority 3: First valid result
+            if not product_page_url and valid_results:
+                product_page_url = valid_results[0].get("url")
 
         except Exception as e:
             print(json.dumps({"error": f"Firecrawl search failed: {str(e)}"}))
@@ -81,11 +116,11 @@ def main():
             print(json.dumps({"data": []}))
             return
 
-        # Step 2: Scrape the specific page, converting to Markdown and extracting images
+        # Step 2: Scrape the page for images using Firecrawl V2 Markdown
         try:
             scrape_payload = {
                 "url": product_page_url,
-                "formats": ["markdown"], # Markdown is much better for extracting rendered images cleanly
+                "formats": ["markdown"],
                 "onlyMainContent": True,
                 "waitFor": 3000,
                 "blockAds": True
@@ -101,31 +136,29 @@ def main():
             img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
             matches = re.findall(img_pattern, markdown)
             
-            # Smart filtering (inspired by working logic)
+            # Smart filtering (skip logos/icons, strictly require SKU in URL)
             clean_images = []
             seen_urls = set()
             
             for img_url in matches:
-                if len(clean_images) >= 5: # Max 5 images
+                if len(clean_images) >= 5:
                     break
-                    
                 if not img_url or not img_url.startswith("http"):
                     continue
-                    
                 if img_url in seen_urls:
                     continue
                     
                 url_lower = img_url.lower()
                 
-                # Filter out non-product images
-                if any(ext in url_lower for ext in ['.html', '.htm', '.svg', '.gif']):
+                # Filter out non-image files and UI elements
+                if any(ext in url_lower for ext in ['.html', '.htm', '.svg', '.gif', '.png']):
                     continue
-                if any(kw in url_lower for kw in ['icon', 'logo', 'avatar', 'placeholder', 'menu', 'shopping', 'bag', 'return', 'sprite', 'cookie', 'close']):
+                if any(kw in url_lower for kw in ['icon', 'logo', 'avatar', 'placeholder', 'menu', 'shopping', 'bag', 'return', 'sprite', 'cookie', 'close', 'background']):
                     continue
-                if any(kw in url_lower for kw in ['library', 'shared', 'background', 'gradient']):
+                if any(kw in url_lower for kw in ['library', 'shared', 'gradient']):
                     continue
                     
-                # If we have a SKU, strictly require it to be in the image URL to avoid generic banners
+                # Strictly require SKU in image URL to prevent generic banners
                 if sku_lower and base_sku:
                     if base_sku not in url_lower and sku_lower not in url_lower:
                         continue 
@@ -133,18 +166,16 @@ def main():
                 clean_images.append(img_url)
                 seen_urls.add(img_url)
 
-            # Construct the output that api.py expects
             output_item = {
                 "url": product_page_url,
-                "description": markdown[:2000], # Send markdown as text context
+                "description": markdown[:2000],
                 "images": clean_images
             }
 
             print(json.dumps({"data": [output_item]}))
 
         except Exception as e:
-            # If scrape fails, return just the search data so api.py can fallback to raw requests
-            print(json.dumps({"data": [{"url": product_page_url, "description": search_data.get("data", {}).get("web", [{}])[0].get("description", ""), "images": []}]}))
+            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
 
 if __name__ == "__main__":
     main()
