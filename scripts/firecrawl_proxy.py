@@ -156,7 +156,7 @@ def main():
                         
                 url_lower = img_url.lower()
                     
-                # Filter out non-image files and UI elements
+                # Filter out non-image files and UI elements (Note: .png is allowed because CDNs like Cartier use .jpeg.transform.carprodcard.png)
                 if any(ext in url_lower for ext in ['.html', '.htm', '.svg', '.gif']):
                     continue
                 if any(kw in url_lower for kw in ['icon', 'logo', 'avatar', 'placeholder', 'menu', 'shopping', 'bag', 'return', 'sprite', 'cookie', 'close', 'background', 'clickToLoad']):

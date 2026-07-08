@@ -84,7 +84,7 @@ class JewelryRequest(BaseModel):
     brand: str = Field(..., json_schema_extra={"examples": ["David Yurman"]})
     vendor_item_number: str = Field("", json_schema_extra={"examples": ["B18729D88APRDIM"]})
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
-    source_url: str = Field("https://www.davidyurman.com/", json_schema_extra={"examples": ["https://www.davidyurman.com/"]})
+    source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
 
     @field_validator("vendor_item_number", "upc_code", mode="before")
     @classmethod
