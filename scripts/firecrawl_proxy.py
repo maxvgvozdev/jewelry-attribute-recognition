@@ -141,10 +141,11 @@ def main():
             img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
             matches = re.findall(img_pattern, markdown)
             
-            # Smart filtering (skip logos/icons, strictly require SKU in URL)
+            # Smart filtering: Pass 1 (Strict SKU) -> Pass 2 (Fallback for hashed URLs like Cartier)
             clean_images = []
             seen_urls = set()
-            
+            non_ui_images = [] # Store images that pass UI filters but fail SKU filter
+                
             for img_url in matches:
                 if len(clean_images) >= 5:
                     break
@@ -152,28 +153,29 @@ def main():
                     continue
                 if img_url in seen_urls:
                     continue
-                    
+                        
                 url_lower = img_url.lower()
-                
+                    
                 # Filter out non-image files and UI elements
-                if any(ext in url_lower for ext in ['.html', '.htm', '.svg', '.gif', '.png']):
+                if any(ext in url_lower for ext in ['.html', '.htm', '.svg', '.gif']):
                     continue
-                if any(kw in url_lower for kw in ['icon', 'logo', 'avatar', 'placeholder', 'menu', 'shopping', 'bag', 'return', 'sprite', 'cookie', 'close', 'background']):
+                if any(kw in url_lower for kw in ['icon', 'logo', 'avatar', 'placeholder', 'menu', 'shopping', 'bag', 'return', 'sprite', 'cookie', 'close', 'background', 'clickToLoad']):
                     continue
                 if any(kw in url_lower for kw in ['library', 'shared', 'gradient']):
                     continue
                     
-                # Require SKU in image URL to prevent generic banners
-                # Require the exact SKU string to be a substring of the image URL
-                if sku_lower and sku_lower not in url_lower:
-                    continue 
+                # Pass 1: Strict SKU substring check
+                if sku_lower and sku_lower in url_lower:
+                    clean_images.append(img_url)
+                    seen_urls.add(img_url)
+                else:
+                    # Save for fallback
+                    non_ui_images.append(img_url)
+                    seen_urls.add(img_url)
                 
-                # Filter out tiny thumbnail images (e.g., .th.jpg)
-                if '.th.' in url_lower or '/th.' in url_lower:
-                    continue
-                
-                clean_images.append(img_url)
-                seen_urls.add(img_url)
+                # Pass 2: Fallback - If strict SKU failed, take the non-UI images (handles Cartier/Tiffany hashes)
+                if not clean_images and non_ui_images:
+                    clean_images = non_ui_images[:5]
 
             output_item = {
                 "url": product_page_url,
