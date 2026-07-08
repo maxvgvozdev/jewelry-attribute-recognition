@@ -164,13 +164,9 @@ def main():
                     continue
                     
                 # Require SKU in image URL to prevent generic banners
-                if sku_lower:
-                    # Check full SKU first, then base SKU as fallback
-                    is_match = sku_lower in url_lower
-                    if not is_match and base_sku:
-                        is_match = base_sku in url_lower
-                    if not is_match:
-                        continue 
+                # Require the exact SKU string to be a substring of the image URL
+                if sku_lower and sku_lower not in url_lower:
+                    continue 
                 
                 # Filter out tiny thumbnail images (e.g., .th.jpg)
                 if '.th.' in url_lower or '/th.' in url_lower:
