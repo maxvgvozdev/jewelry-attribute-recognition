@@ -256,23 +256,22 @@ def _build_attributes_from_text_and_vision(
         attrs["metal_type"] = None
         attrs["metal_color"] = None
 
-    if "bracelet" in text_lower or "bracelet" in (item_number or "").lower():
-        attrs["product_type"] = "Bracelets"
-    elif "ring" in text_lower or "ring" in (item_number or "").lower() or item_number.startswith(("R", "B")):
-        attrs["product_type"] = "Rings"
-    elif "earring" in text_lower:
+    # Determine product type from TEXT first, fallback to SKU heuristics
+    if "earring" in text_lower:
         attrs["product_type"] = "Earrings"
-    elif "necklace" in text_lower:
+    elif "bracelet" in text_lower:
+        attrs["product_type"] = "Bracelets"
+    elif "necklace" in text_lower or "pendant" in text_lower:
         attrs["product_type"] = "Necklaces"
+    elif "ring" in text_lower:
+        attrs["product_type"] = "Rings"
+    # Only use prefix guessing if text extraction completely failed
+    elif item_number:
+        if item_number.startswith("R"): 
+            attrs["product_type"] = "Rings"
+        # Remove 'B' from here, it's too ambiguous across different brands
     else:
         attrs["product_type"] = None
-
-    if "men's" in text_lower or " men " in text_lower:
-        attrs["gender"] = "Men's"
-    elif "women's" in text_lower or " women " in text_lower:
-        attrs["gender"] = "Women's"
-    else:
-        attrs["gender"] = None
 
     attrs.update({
         "stone_primary_color": None, "center_stone_type": None, "center_stone_shape": None,
