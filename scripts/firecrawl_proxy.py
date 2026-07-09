@@ -117,9 +117,9 @@ def main():
         try:
             scrape_payload = {
                 "url": product_page_url,
-                "formats": ["product", "markdown"], # Product gives us clean images, Markdown gives us description text
-                "onlyMainContent": True,
-                "waitFor": 3000,
+                "formats": ["product", "markdown"], 
+                "onlyMainContent": False, # Set to False to catch lazy-loaded gallery images!
+                "waitFor": 5000,            # Give Cartier's JS gallery 5 seconds to render
                 "blockAds": True
             }
             
