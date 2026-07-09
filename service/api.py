@@ -300,7 +300,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     confidence_notes: List[str] = []
     resolved_url = ""
     images: List[ImageEvidence] = []
-    text = ""
+    page_text = ""  # Initialize once at the top
     item_number = vendor_item_number
 
     if upc_code:
@@ -320,30 +320,27 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Either vendor_item_number or upc_code must be provided.")
 
     items = []
-    resolved_url = ""
-
-    firecrawl_available = _firecrawl_available()
     image_urls = []
     
-    if firecrawl_available:
+    if _firecrawl_available():
         try:
             search_result = _run_firecrawl_search(search_query)
             items = search_result.get("data", []) or []
             if items:
                 resolved_url = items[0].get("url", "")
+                # Capture text from V2 proxy
                 page_text = items[0].get("description", "") or ""
                 
-                # If Firecrawl V2 successfully extracted images, use them directly!
+                # Capture images from V2 proxy
                 firecrawl_images = items[0].get("images", [])
                 if firecrawl_images:
                     image_urls = firecrawl_images
-                    confidence_notes.append("Extracted product images via Firecrawl V2 Markdown parsing.")
+                    confidence_notes.append("Extracted product data and images via Firecrawl V2.")
                 else:
-                    confidence_notes.append("Firecrawl found page but extracted 0 matching images.")
+                    confidence_notes.append("Firecrawl V2 extracted text, but 0 images.")
                     
         except Exception as exc:
-            firecrawl_available = False
-            confidence_notes.append(f"Firecrawl search unavailable; using direct HTTP fallback only. ({exc})")
+            confidence_notes.append(f"Firecrawl proxy failed; using direct HTTP fallback only. ({exc})")
     else:
         confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
 
@@ -355,7 +352,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         else:
             raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
 
-    page_text = ""
+    # Get host for CDN preference logic (Moved up, NO MORE page_text = "" !!!)
     try:
         from urllib.parse import urlparse
         parsed = urlparse(resolved_url)
@@ -363,16 +360,14 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     except Exception:
         host = ""
 
-    # Only do raw Python fallback scrape if Firecrawl didn't find any images
-    if resolved_url and not image_urls:
+    # Only do raw Python fallback scrape if Firecrawl found NOTHING
+    if resolved_url and not image_urls and not page_text:
         try:
             page_resp = requests.get(resolved_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
             page_resp.raise_for_status()
             html = page_resp.text
-            # Safely get snippet if Firecrawl was used, otherwise just use HTML
             snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
             page_text = f"{snippet} {html[:2000]}"
-            # Matches standard .jpg/.png AND modern e-commerce URLs with no extensions (e.g., ?wid=400)
             image_urls = re.findall(r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png)(?:\?[^\s\"'<>]*)?", html)
             if not image_urls:
                 image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)
