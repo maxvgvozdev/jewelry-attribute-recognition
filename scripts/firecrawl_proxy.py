@@ -171,27 +171,7 @@ def main():
             print(json.dumps({"data": [output_item]}))
 
         except Exception as e:
-            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
-
-            # Build rich text context: Product Title + Description + Markdown
-            title = product_data.get("title", "")
-            description = product_data.get("description", "")
-            context_parts = []
-            if title: context_parts.append(title)
-            if description: context_parts.append(description)
-            if markdown: context_parts.append(markdown[:4000])
-            
-            text_context = "\n\n".join(context_parts)
-
-            output_item = {
-                "url": product_page_url,
-                "description": text_context,
-                "images": clean_images[:5] # Max 5 images for the AI
-            }
-
-            print(json.dumps({"data": [output_item]}))
-
-        except Exception as e:
+            # Fail gracefully so api.py can handle the fallback
             print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
 
 if __name__ == "__main__":
