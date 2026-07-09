@@ -163,7 +163,8 @@ def main():
             if og_image and og_image.startswith("http"):
                 raw_images.insert(0, og_image)
                 
-            bad_keywords = ['/menu/', '/pdp-assets/', 'logo.svg', 'favicon']
+            # Catch-all list for UI garbage, case-insensitive
+            bad_keywords = ['menu', 'megamenu', 'pdp-assets', 'logo', 'favicon', 'sprite', 'badge', 'icon']
             
             for img in raw_images:
                 if not isinstance(img, str) or not img.startswith("http"): continue
