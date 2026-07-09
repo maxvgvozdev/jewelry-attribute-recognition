@@ -149,6 +149,21 @@ def main():
                     clean_images.append(img_url)
                     seen_urls.add(img_url)
 
+            # FALLBACK: If product format found 0 images (e.g., Cartier non-English pages), parse markdown
+            if not clean_images and markdown:
+                import re
+                img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
+                matches = re.findall(img_pattern, markdown)
+                for img_url in matches:
+                    if len(clean_images) >= 5:
+                        break
+                    if img_url and img_url.startswith("http") and img_url not in seen_urls:
+                        url_lower = img_url.lower()
+                        if any(kw in url_lower for kw in ['icon', 'logo', 'placeholder', 'menu', 'clickToLoad']):
+                            continue
+                        clean_images.append(img_url)
+                        seen_urls.add(img_url)
+
             # Build rich text context: Product Title + Description + Markdown
             title = product_data.get("title", "")
             description = product_data.get("description", "")
