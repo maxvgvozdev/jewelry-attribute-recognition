@@ -113,13 +113,34 @@ def main():
             print(json.dumps({"data": []}))
             return
 
-        # Step 2: Scrape using Firecrawl's Native Product extraction (NO MORE REGEX!)
+        # Step 2: Scrape using targeted JSON extraction to bypass JS menus
         try:
             scrape_payload = {
                 "url": product_page_url,
-                "formats": ["product", "markdown"], 
-                "onlyMainContent": False, # Set to False to catch lazy-loaded gallery images!
-                "waitFor": 5000,            # Give Cartier's JS gallery 5 seconds to render
+                "formats": [
+                    {
+                        "type": "json",
+                        "prompt": """IGNORE the website header, footer, and all navigation menus. 
+                        Focus ONLY on the main product details section for this specific jewelry item.
+                        Extract the product title, full description text, materials/metals used, 
+                        gemstones used, and ALL high-resolution image URLs from the product image gallery. 
+                        Do NOT include thumbnail images used for website navigation menus.""",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "product_title": {"type": ["string", "null"]},
+                                "description": {"type": ["string", "null"]},
+                                "materials_text": {"type": ["string", "null"]},
+                                "image_urls": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                ],
+                "onlyMainContent": False,
+                "waitFor": 5000,
                 "blockAds": True
             }
             
@@ -127,68 +148,39 @@ def main():
             scrape_resp.raise_for_status()
             scrape_data = scrape_resp.json()
             
-            product_data = scrape_data.get("data", {}).get("product", {})
-            markdown = scrape_data.get("data", {}).get("markdown", "")
+            # Extract from the new JSON structure
+            extracted_data = scrape_data.get("data", {}).get("json", {})
             
-            # Extract images natively from the structured product object
+            # Build a unified text block for the downstream api.py
+            title = extracted_data.get("product_title", "")
+            desc = extracted_data.get("description", "")
+            materials = extracted_data.get("materials_text", "")
+            text_parts = [p for p in [title, desc, materials] if p]
+            text_context = "\n".join(text_parts)
+            
+            # Get images directly from the LLM extraction
             clean_images = []
             seen_urls = set()
-            unverified_images = [] # Hold URLs here first to check if they are real images
+            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu']
             
-            # Look inside variants (standard for e-commerce like Cartier/DY)
-            for variant in product_data.get("variants", []):
-                for img in variant.get("images", []):
-                    img_url = img.get("url", "")
-                    if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                        unverified_images.append(img_url)
-                        seen_urls.add(img_url)
-                        
-            # Fallback: Look at root product level
-            for img in product_data.get("images", []):
-                img_url = img.get("url", "")
-                if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                    unverified_images.append(img_url)
-                    seen_urls.add(img_url)
+            for img_url in extracted_data.get("image_urls", []):
+                if not img_url or not img_url.startswith("http"): continue
+                if img_url in seen_urls: continue
+                if any(kw in img_url.lower() for kw in bad_keywords): continue
+                
+                clean_images.append(img_url)
+                seen_urls.add(img_url)
 
-            # VALIDATION: Only accept URLs that actually look like images, otherwise discard them and fallback to Markdown
-            for img_url in unverified_images:
-                url_lower = img_url.lower()
-                is_image = (
-                    any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp']) or
-                    any(cdn in url_lower for cdn in ['/images/', '/large/', 'transform.', 'demandware.static', 'carprodcard', '/dam/'])
-                )
-                if is_image:
-                    clean_images.append(img_url)
+            output_item = {
+                "url": product_page_url,
+                "description": text_context,
+                "images": clean_images[:5] # Max 5 images
+            }
 
-            # FINAL FALLBACK: If product format found 0 real images, parse the Markdown text
-            if not clean_images and markdown:
-                import re
-                img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
-                matches = re.findall(img_pattern, markdown)
-                for img_url in matches:
-                    if len(clean_images) >= 5:
-                        break
-                    if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                        url_lower = img_url.lower()
-                        if any(kw in url_lower for kw in ['icon', 'logo', 'placeholder', 'menu', 'clickToLoad']):
-                            continue
-                        clean_images.append(img_url)
-                        seen_urls.add(img_url)
+            print(json.dumps({"data": [output_item]}))
 
-            # FALLBACK: If product format found 0 images (e.g., Cartier non-English pages), parse markdown
-            if not clean_images and markdown:
-                import re
-                img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
-                matches = re.findall(img_pattern, markdown)
-                for img_url in matches:
-                    if len(clean_images) >= 5:
-                        break
-                    if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                        url_lower = img_url.lower()
-                        if any(kw in url_lower for kw in ['icon', 'logo', 'placeholder', 'menu', 'clickToLoad']):
-                            continue
-                        clean_images.append(img_url)
-                        seen_urls.add(img_url)
+        except Exception as e:
+            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
 
             # Build rich text context: Product Title + Description + Markdown
             title = product_data.get("title", "")
