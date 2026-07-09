@@ -201,10 +201,17 @@ def _check_upc(upc_code: str) -> Dict[str, Any]:
         return {"found": False, "error": str(exc), "url": url}
 
 
-def _download_image(url: str, dest: Path) -> str:
+def _download_image(url: str, dest: Path, referer: str = "") -> str:
     """Download image to artifacts dir; return absolute path."""
     try:
-        resp = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        # Bypass hotlink protection (CDN 403s) by pretending to be the brand's own webpage
+        if referer:
+            headers["Referer"] = referer
+            
+        resp = requests.get(url, timeout=60, headers=headers, stream=True)
         resp.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as f:
@@ -387,7 +394,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         view_type = view_map.get(idx, "additional")
         local_name = ARTIFACTS_DIR / f"svc_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.jpg"
         try:
-            local_path = _download_image(img_url, local_name)
+            local_path = _download_image(img_url, local_name, referer=resolved_url)
             vision = _analyze_image(local_path, f"{view_type} view analysis for {brand} {item_number}")
             vision_results.append(vision)
             images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
