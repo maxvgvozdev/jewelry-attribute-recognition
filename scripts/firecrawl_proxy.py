@@ -133,21 +133,47 @@ def main():
             # Extract images natively from the structured product object
             clean_images = []
             seen_urls = set()
+            unverified_images = [] # Hold URLs here first to check if they are real images
             
             # Look inside variants (standard for e-commerce like Cartier/DY)
             for variant in product_data.get("variants", []):
                 for img in variant.get("images", []):
                     img_url = img.get("url", "")
                     if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                        clean_images.append(img_url)
+                        unverified_images.append(img_url)
                         seen_urls.add(img_url)
                         
             # Fallback: Look at root product level
             for img in product_data.get("images", []):
                 img_url = img.get("url", "")
                 if img_url and img_url.startswith("http") and img_url not in seen_urls:
-                    clean_images.append(img_url)
+                    unverified_images.append(img_url)
                     seen_urls.add(img_url)
+
+            # VALIDATION: Only accept URLs that actually look like images, otherwise discard them and fallback to Markdown
+            for img_url in unverified_images:
+                url_lower = img_url.lower()
+                is_image = (
+                    any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp']) or
+                    any(cdn in url_lower for cdn in ['/images/', '/large/', 'transform.', 'demandware.static', 'carprodcard', '/dam/'])
+                )
+                if is_image:
+                    clean_images.append(img_url)
+
+            # FINAL FALLBACK: If product format found 0 real images, parse the Markdown text
+            if not clean_images and markdown:
+                import re
+                img_pattern = r'!\[.*?\]\((https?://[^\s\)]+)\)'
+                matches = re.findall(img_pattern, markdown)
+                for img_url in matches:
+                    if len(clean_images) >= 5:
+                        break
+                    if img_url and img_url.startswith("http") and img_url not in seen_urls:
+                        url_lower = img_url.lower()
+                        if any(kw in url_lower for kw in ['icon', 'logo', 'placeholder', 'menu', 'clickToLoad']):
+                            continue
+                        clean_images.append(img_url)
+                        seen_urls.add(img_url)
 
             # FALLBACK: If product format found 0 images (e.g., Cartier non-English pages), parse markdown
             if not clean_images and markdown:
