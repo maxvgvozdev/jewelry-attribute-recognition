@@ -163,20 +163,25 @@ def main():
             if og_image and og_image.startswith("http"):
                 raw_images.insert(0, og_image)
                 
-            # Catch-all list for UI garbage, case-insensitive
+            # Catch-all list for UI garbage
             bad_keywords = ['menu', 'megamenu', 'pdp-assets', 'logo', 'favicon', 'sprite', 'badge', 'icon']
             
             for img in raw_images:
                 if not isinstance(img, str) or not img.startswith("http"): continue
                 if any(kw in img.lower() for kw in bad_keywords): continue
                 
-                # MAGIC TRICK: Strip CDN transformation strings to get raw high-res images
-                # e.g., ".../image.jpeg.transform.carprodcard.png" -> ".../image.jpeg"
-                # This also perfectly deduplicates mobile/tab/desktop thumbnails into 1 URL!
+                # Strip CDN transformation strings to get raw high-res images
                 base_url = img.split('.transform.')[0]
                 
                 # Ensure it still looks like a valid image file after stripping
                 if not any(ext in base_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                    continue
+
+                # CARTIER-SPECIFIC FIX: Filter out "You may also like" hashed images.
+                # Official Cartier master assets use purely numeric filenames (e.g., '2116871.jpeg').
+                # Cross-sell/recommendation images use random hashes (e.g., '4QNWWaeMSnGoNSL3WuJ_nQ.jpeg').
+                filename = base_url.split('/')[-1].split('.')[0]
+                if not filename.isdigit():
                     continue
                     
                 # Deduplicate based on the clean base URL
