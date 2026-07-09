@@ -113,7 +113,7 @@ def main():
             print(json.dumps({"data": []}))
             return
 
-        # Step 2: Scrape using targeted JSON extraction to bypass JS menus
+        # Step 2: Scrape using targeted JSON extraction + Raw HTML for images
         try:
             scrape_payload = {
                 "url": product_page_url,
@@ -123,21 +123,17 @@ def main():
                         "prompt": """IGNORE the website header, footer, and all navigation menus. 
                         Focus ONLY on the main product details section for this specific jewelry item.
                         Extract the product title, full description text, materials/metals used, 
-                        gemstones used, and ALL high-resolution image URLs from the product image gallery. 
-                        Do NOT include thumbnail images used for website navigation menus.""",
+                        and gemstones used. Return null for images, we will extract those separately.""",
                         "schema": {
                             "type": "object",
                             "properties": {
                                 "product_title": {"type": ["string", "null"]},
                                 "description": {"type": ["string", "null"]},
-                                "materials_text": {"type": ["string", "null"]},
-                                "image_urls": {
-                                    "type": "array",
-                                    "items": {"type": "string"}
-                                }
+                                "materials_text": {"type": ["string", "null"]}
                             }
                         }
-                    }
+                    },
+                    "rawHtml"  # Request raw HTML to parse image URLs that JS hides from text extractors
                 ],
                 "onlyMainContent": False,
                 "waitFor": 5000,
@@ -148,28 +144,67 @@ def main():
             scrape_resp.raise_for_status()
             scrape_data = scrape_resp.json()
             
-            # Extract from the new JSON structure
+            # 1. Get perfect text from LLM
             extracted_data = scrape_data.get("data", {}).get("json", {})
-            
-            # Build a unified text block for the downstream api.py
             title = extracted_data.get("product_title", "")
             desc = extracted_data.get("description", "")
             materials = extracted_data.get("materials_text", "")
             text_parts = [p for p in [title, desc, materials] if p]
             text_context = "\n".join(text_parts)
             
-            # Get images directly from the LLM extraction
+            # 2. Extract images from Raw HTML (Bypasses LLM blindness & Python bot-blocking)
+            raw_html = scrape_data.get("data", {}).get("rawHtml", "")
             clean_images = []
             seen_urls = set()
-            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu']
+            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu', 'sprite', 'data:image']
             
-            for img_url in extracted_data.get("image_urls", []):
-                if not img_url or not img_url.startswith("http"): continue
-                if img_url in seen_urls: continue
-                if any(kw in img_url.lower() for kw in bad_keywords): continue
+            def is_good_image(img_url):
+                if not img_url or not img_url.startswith("http"): return False
+                if img_url in seen_urls: return False
+                if any(kw in img_url.lower() for kw in bad_keywords): return False
+                # Accept standard image extensions
+                if any(ext in img_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): return True
+                # Accept extensionless URLs with image resizing parameters
+                if any(p in img_url.lower() for p in ['wid=', 'qlt=', 'imwidth=', 'imheight=']): return True
+                return False
+
+            if raw_html:
+                import re as re_mod
+                import json as json_mod
                 
-                clean_images.append(img_url)
-                seen_urls.add(img_url)
+                # Strategy A: Look for JSON-LD (Schema.org) - Luxury brands usually hide gallery here
+                ld_matches = re_mod.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', raw_html, re_mod.DOTALL | re_mod.IGNORECASE)
+                for match in ld_matches:
+                    try:
+                        data = json_mod.loads(match)
+                        if isinstance(data, list): data = data[0]
+                        if data.get("@type") == "Product":
+                            imgs = data.get("image", [])
+                            if isinstance(imgs, str): imgs = [imgs]
+                            for img in imgs:
+                                if is_good_image(img):
+                                    clean_images.append(img)
+                                    seen_urls.add(img)
+                    except Exception:
+                        pass
+
+                # Strategy B: If JSON-LD failed, parse standard <img src="..."> tags
+                if not clean_images:
+                    img_tags = re_mod.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw_html, re_mod.IGNORECASE)
+                    for img in img_tags:
+                        if len(clean_images) >= 5: break
+                        if is_good_image(img):
+                            clean_images.append(img)
+                            seen_urls.add(img)
+
+                # Strategy C: Fallback to CSS background-image (sometimes used for carousels)
+                if not clean_images:
+                    bg_imgs = re_mod.findall(r'background-image:\s*url\(["\']?([^"\')\s]+)["\']?\)', raw_html, re_mod.IGNORECASE)
+                    for img in img_tags:
+                        if len(clean_images) >= 5: break
+                        if is_good_image(img):
+                            clean_images.append(img)
+                            seen_urls.add(img)
 
             output_item = {
                 "url": product_page_url,
