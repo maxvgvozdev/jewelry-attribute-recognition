@@ -113,7 +113,7 @@ def main():
             print(json.dumps({"data": []}))
             return
 
-        # Step 2: Scrape using targeted JSON extraction + Raw HTML for images
+        # Step 2: Scrape using native JSON for text + native "images" format for gallery
         try:
             scrape_payload = {
                 "url": product_page_url,
@@ -123,7 +123,7 @@ def main():
                         "prompt": """IGNORE the website header, footer, and all navigation menus. 
                         Focus ONLY on the main product details section for this specific jewelry item.
                         Extract the product title, full description text, materials/metals used, 
-                        and gemstones used. Return null for images, we will extract those separately.""",
+                        and gemstones used.""",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -133,7 +133,7 @@ def main():
                             }
                         }
                     },
-                    "rawHtml"  # Request raw HTML to parse image URLs that JS hides from text extractors
+                    "images"  # Native Firecrawl V2 format to rip all rendered image URLs
                 ],
                 "onlyMainContent": False,
                 "waitFor": 5000,
@@ -144,7 +144,7 @@ def main():
             scrape_resp.raise_for_status()
             scrape_data = scrape_resp.json()
             
-            # 1. Get perfect text from LLM
+            # 1. Extract perfect text from JSON format
             extracted_data = scrape_data.get("data", {}).get("json", {})
             title = extracted_data.get("product_title", "")
             desc = extracted_data.get("description", "")
@@ -152,64 +152,20 @@ def main():
             text_parts = [p for p in [title, desc, materials] if p]
             text_context = "\n".join(text_parts)
             
-            # 2. Extract images from Raw HTML (Bypasses LLM blindness & Python bot-blocking)
-            raw_html = scrape_data.get("data", {}).get("rawHtml", "")
-            clean_images = []
-            seen_urls = set()
-            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu', 'sprite', 'data:image']
+            # 2. Extract images from native "images" format
+            raw_images = scrape_data.get("data", {}).get("images", [])
             
-            def is_good_image(img_url):
-                if not img_url or not img_url.startswith("http"): return False
-                if img_url in seen_urls: return False
-                if any(kw in img_url.lower() for kw in bad_keywords): return False
-                # Accept standard image extensions
-                if any(ext in img_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): return True
-                # Accept extensionless URLs with image resizing parameters
-                if any(p in img_url.lower() for p in ['wid=', 'qlt=', 'imwidth=', 'imheight=']): return True
-                return False
-
-            if raw_html:
-                import re as re_mod
-                import json as json_mod
-                
-                # Strategy A: Look for JSON-LD (Schema.org) - Luxury brands usually hide gallery here
-                ld_matches = re_mod.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', raw_html, re_mod.DOTALL | re_mod.IGNORECASE)
-                for match in ld_matches:
-                    try:
-                        data = json_mod.loads(match)
-                        if isinstance(data, list): data = data[0]
-                        if data.get("@type") == "Product":
-                            imgs = data.get("image", [])
-                            if isinstance(imgs, str): imgs = [imgs]
-                            for img in imgs:
-                                if is_good_image(img):
-                                    clean_images.append(img)
-                                    seen_urls.add(img)
-                    except Exception:
-                        pass
-
-                # Strategy B: If JSON-LD failed, parse standard <img src="..."> tags
-                if not clean_images:
-                    img_tags = re_mod.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw_html, re_mod.IGNORECASE)
-                    for img in img_tags:
-                        if len(clean_images) >= 5: break
-                        if is_good_image(img):
-                            clean_images.append(img)
-                            seen_urls.add(img)
-
-                # Strategy C: Fallback to CSS background-image (sometimes used for carousels)
-                if not clean_images:
-                    bg_imgs = re_mod.findall(r'background-image:\s*url\(["\']?([^"\')\s]+)["\']?\)', raw_html, re_mod.IGNORECASE)
-                    for img in img_tags:
-                        if len(clean_images) >= 5: break
-                        if is_good_image(img):
-                            clean_images.append(img)
-                            seen_urls.add(img)
+            # Filter out UI elements, thumbnails, and menu garbage
+            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu', 'sprite', 'badge', 'pdp-assets']
+            clean_images = [
+                img for img in raw_images 
+                if isinstance(img, str) and not any(kw in img.lower() for kw in bad_keywords)
+            ][:5] # Limit to 5 for Vision AI
 
             output_item = {
                 "url": product_page_url,
                 "description": text_context,
-                "images": clean_images[:5] # Max 5 images
+                "images": clean_images
             }
 
             print(json.dumps({"data": [output_item]}))
