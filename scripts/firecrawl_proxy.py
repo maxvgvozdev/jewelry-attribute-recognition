@@ -133,7 +133,7 @@ def main():
                             }
                         }
                     },
-                    "images"  # Native Firecrawl V2 format to rip all rendered image URLs
+                    "images"  
                 ],
                 "onlyMainContent": False,
                 "waitFor": 5000,
@@ -152,15 +152,39 @@ def main():
             text_parts = [p for p in [title, desc, materials] if p]
             text_context = "\n".join(text_parts)
             
-            # 2. Extract images from native "images" format
+            # 2. Extract and clean images
             raw_images = scrape_data.get("data", {}).get("images", [])
+            og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
             
-            # Filter out UI elements, thumbnails, and menu garbage
-            bad_keywords = ['carprodcard', 'car2image', 'icon', 'logo', 'menu', 'sprite', 'badge', 'pdp-assets']
-            clean_images = [
-                img for img in raw_images 
-                if isinstance(img, str) and not any(kw in img.lower() for kw in bad_keywords)
-            ][:5] # Limit to 5 for Vision AI
+            clean_images = []
+            seen_bases = set()
+            
+            # Prioritize the OG image (safest bet for the main product shot)
+            if og_image and og_image.startswith("http"):
+                raw_images.insert(0, og_image)
+                
+            bad_keywords = ['/menu/', '/pdp-assets/', 'logo.svg', 'favicon']
+            
+            for img in raw_images:
+                if not isinstance(img, str) or not img.startswith("http"): continue
+                if any(kw in img.lower() for kw in bad_keywords): continue
+                
+                # MAGIC TRICK: Strip CDN transformation strings to get raw high-res images
+                # e.g., ".../image.jpeg.transform.carprodcard.png" -> ".../image.jpeg"
+                # This also perfectly deduplicates mobile/tab/desktop thumbnails into 1 URL!
+                base_url = img.split('.transform.')[0]
+                
+                # Ensure it still looks like a valid image file after stripping
+                if not any(ext in base_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                    continue
+                    
+                # Deduplicate based on the clean base URL
+                if base_url not in seen_bases:
+                    clean_images.append(base_url)
+                    seen_bases.add(base_url)
+                    
+                if len(clean_images) >= 5:
+                    break
 
             output_item = {
                 "url": product_page_url,
@@ -171,7 +195,6 @@ def main():
             print(json.dumps({"data": [output_item]}))
 
         except Exception as e:
-            # Fail gracefully so api.py can handle the fallback
             print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
 
 if __name__ == "__main__":
