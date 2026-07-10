@@ -211,7 +211,9 @@ def _download_image(url: str, dest: Path, referer: str = "") -> str:
         if referer:
             headers["Referer"] = referer
             
-        resp = requests.get(url, timeout=60, headers=headers, stream=True)
+        # CRITICAL FIX: Use tuple (connect_timeout, read_timeout).
+        # This prevents CDNs from hanging the download for 10+ minutes by drip-feeding data.
+        resp = requests.get(url, timeout=(10, 30), headers=headers, stream=True)
         resp.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as f:

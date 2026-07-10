@@ -113,7 +113,7 @@ def main():
             print(json.dumps({"data": []}))
             return
 
-        # Step 2: Scrape using native JSON for text + native "images" format for gallery
+        # Step 2: Scrape using JSON for text + OG Image for the primary product shot
         try:
             scrape_payload = {
                 "url": product_page_url,
@@ -132,8 +132,7 @@ def main():
                                 "materials_text": {"type": ["string", "null"]}
                             }
                         }
-                    },
-                    "images"  
+                    }
                 ],
                 "onlyMainContent": False,
                 "waitFor": 5000,
@@ -152,47 +151,15 @@ def main():
             text_parts = [p for p in [title, desc, materials] if p]
             text_context = "\n".join(text_parts)
             
-            # 2. Extract and clean images
-            raw_images = scrape_data.get("data", {}).get("images", [])
+            # 2. Extract the primary product image safely from metadata
+            clean_images = []
             og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
             
-            clean_images = []
-            seen_bases = set()
-            
-            # Prioritize the OG image (safest bet for the main product shot)
             if og_image and og_image.startswith("http"):
-                raw_images.insert(0, og_image)
-                
-            # Catch-all list for UI garbage, banners, and navigation
-            bad_keywords = [
-                'menu', 'megamenu', 'pdp-assets', 'logo', 'favicon', 'sprite', 'badge', 'icon',
-                'demandware', 'library-sites', 'valentines' # Blocks DY banners/SFCC UI assets
-            ]
-            
-            for img in raw_images:
-                if not isinstance(img, str) or not img.startswith("http"): continue
-                if any(kw in img.lower() for kw in bad_keywords): continue
-                
-                # Strip CDN transformations AND URL parameters (e.g., ?version=15&width=500)
-                clean_url = img.split('.transform.')[0].split('?')[0]
-                
-                # Ensure it still looks like a valid image file after stripping
-                if not any(ext in clean_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                    continue
-
-                # CARTIER-SPECIFIC FIX: Filter out "You may also like" hashed images.
-                if 'cartier.com' in clean_url.lower():
-                    filename = clean_url.split('/')[-1].split('.')[0]
-                    if not filename.isdigit():
-                        continue
-                    
-                # Deduplicate based on the clean base URL
-                if clean_url not in seen_bases:
+                # Strip any thumbnail transformations and URL parameters to get the raw master file
+                clean_url = og_image.split('.transform.')[0].split('?')[0]
+                if any(ext in clean_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
                     clean_images.append(clean_url)
-                    seen_bases.add(clean_url)
-                    
-                if len(clean_images) >= 5:
-                    break
 
             output_item = {
                 "url": product_page_url,
