@@ -401,7 +401,9 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             vision_results.append(vision)
             images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
         except Exception as exc:
-            logger.warning("Image handling failed for %s: %s", img_url, exc)
+            error_msg = f"Image download failed for {img_url}: {exc}"
+            logger.warning(error_msg)
+            confidence_notes.append(error_msg)
 
     combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
     attrs_dict = _build_attributes_from_text_and_vision(brand, combined_text, vision_results, item_number or upc_code)
