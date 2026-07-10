@@ -180,9 +180,11 @@ def main():
                 # CARTIER-SPECIFIC FIX: Filter out "You may also like" hashed images.
                 # Official Cartier master assets use purely numeric filenames (e.g., '2116871.jpeg').
                 # Cross-sell/recommendation images use random hashes (e.g., '4QNWWaeMSnGoNSL3WuJ_nQ.jpeg').
-                filename = base_url.split('/')[-1].split('.')[0]
-                if not filename.isdigit():
-                    continue
+                # Only apply this strict rule to Cartier, as other brands use alphanumeric filenames.
+                if 'cartier.com' in base_url.lower():
+                    filename = base_url.split('/')[-1].split('.')[0]
+                    if not filename.isdigit():
+                        continue
                     
                 # Deduplicate based on the clean base URL
                 if base_url not in seen_bases:
