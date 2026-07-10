@@ -156,10 +156,9 @@ def main():
             og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
             
             if og_image and og_image.startswith("http"):
-                # Strip any thumbnail transformations and URL parameters to get the raw master file
-                clean_url = og_image.split('.transform.')[0].split('?')[0]
-                if any(ext in clean_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                    clean_images.append(clean_url)
+                # Use the OG image EXACTLY as provided to avoid triggering 
+                # strict CDN hotlink protection on raw master files.
+                clean_images.append(og_image)
 
             output_item = {
                 "url": product_page_url,
