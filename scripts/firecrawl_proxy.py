@@ -174,22 +174,22 @@ def main():
                 if any(kw in img.lower() for kw in bad_keywords): continue
                 
                 # Strip CDN transformations AND URL parameters (e.g., ?version=15&width=500)
-                base_url = img.split('.transform.')[0].split('?')[0]
+                clean_url = img.split('.transform.')[0].split('?')[0]
                 
                 # Ensure it still looks like a valid image file after stripping
-                if not any(ext in base_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                if not any(ext in clean_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
                     continue
 
                 # CARTIER-SPECIFIC FIX: Filter out "You may also like" hashed images.
-                if 'cartier.com' in base_url.lower():
-                    filename = base_url.split('/')[-1].split('.')[0]
+                if 'cartier.com' in clean_url.lower():
+                    filename = clean_url.split('/')[-1].split('.')[0]
                     if not filename.isdigit():
                         continue
                     
                 # Deduplicate based on the clean base URL
-                if base_url not in seen_bases:
-                    clean_images.append(base_url)
-                    seen_bases.add(base_url)
+                if clean_url not in seen_bases:
+                    clean_images.append(clean_url)
+                    seen_bases.add(clean_url)
                     
                 if len(clean_images) >= 5:
                     break
