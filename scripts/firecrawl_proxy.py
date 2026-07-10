@@ -163,24 +163,24 @@ def main():
             if og_image and og_image.startswith("http"):
                 raw_images.insert(0, og_image)
                 
-            # Catch-all list for UI garbage
-            bad_keywords = ['menu', 'megamenu', 'pdp-assets', 'logo', 'favicon', 'sprite', 'badge', 'icon']
+            # Catch-all list for UI garbage, banners, and navigation
+            bad_keywords = [
+                'menu', 'megamenu', 'pdp-assets', 'logo', 'favicon', 'sprite', 'badge', 'icon',
+                'demandware', 'library-sites', 'valentines' # Blocks DY banners/SFCC UI assets
+            ]
             
             for img in raw_images:
                 if not isinstance(img, str) or not img.startswith("http"): continue
                 if any(kw in img.lower() for kw in bad_keywords): continue
                 
-                # Strip CDN transformation strings to get raw high-res images
-                base_url = img.split('.transform.')[0]
+                # Strip CDN transformations AND URL parameters (e.g., ?version=15&width=500)
+                base_url = img.split('.transform.')[0].split('?')[0]
                 
                 # Ensure it still looks like a valid image file after stripping
                 if not any(ext in base_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
                     continue
 
                 # CARTIER-SPECIFIC FIX: Filter out "You may also like" hashed images.
-                # Official Cartier master assets use purely numeric filenames (e.g., '2116871.jpeg').
-                # Cross-sell/recommendation images use random hashes (e.g., '4QNWWaeMSnGoNSL3WuJ_nQ.jpeg').
-                # Only apply this strict rule to Cartier, as other brands use alphanumeric filenames.
                 if 'cartier.com' in base_url.lower():
                     filename = base_url.split('/')[-1].split('.')[0]
                     if not filename.isdigit():
