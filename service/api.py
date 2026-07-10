@@ -401,7 +401,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             vision_results.append(vision)
             images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
         except Exception as exc:
-            error_msg = f"Image download failed for {img_url}: {exc}"
+            error_msg = f"Image processing/analysis failed for {img_url}: {exc}"
             logger.warning(error_msg)
             confidence_notes.append(error_msg)
 
