@@ -35,6 +35,47 @@ try:
 except Exception:
     _uvicorn = None  # type: ignore[assignment]
 
+# Strict schema prompt for Vision AI to extract all 31 BC365 fields
+VISION_EXTRACTION_PROMPT = """You are an expert GIA-certified jewelry appraiser. Analyze this jewelry image and return a JSON object with EXACTLY these 31 keys. 
+If a value cannot be determined from the image, use null. Do not guess. Use exact GIA terminology.
+
+Required JSON keys and valid examples:
+{
+  "metal_type": "18K Yellow Gold",
+  "metal_color": "Yellow",
+  "stone_primary_color": "White",
+  "product_type": "Earrings",
+  "gender": "Ladies",
+  "center_stone_type": "Diamond",
+  "center_stone_shape": "Round Brilliant",
+  "side_stone_1_type": null,
+  "side_stone_1_shape": null,
+  "side_stone_2_type": null,
+  "side_stone_2_shape": null,
+  "engagement_set_type": null,
+  "engagement_ring_type": null,
+  "wedding_band_type": null,
+  "wedding_band_setting_type": "Bezel",
+  "wedding_band_stone_continuity": null,
+  "fashion_ring_type": null,
+  "earring_type": "Stud",
+  "necklace_type": null,
+  "bracelet_type": null,
+  "accessory_type": null,
+  "theme": "Love",
+  "occasion": null,
+  "jewelry_shape": "Round",
+  "motif": null,
+  "finishing_type": "Polished",
+  "estate_period": null,
+  "holiday_code": null,
+  "chain_type": null,
+  "clasp_type": null,
+  "earring_back": "Push"
+}
+
+Return ONLY the raw JSON object, no markdown, no explanation."""
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -249,49 +290,59 @@ def _build_attributes_from_text_and_vision(
     vision_results: List[Dict[str, Any]],
     item_number: str,
 ) -> Dict[str, Any]:
+    import re
     text_lower = (text or "").lower()
-    attrs: Dict[str, Any] = {}
+    
+    # 1. Initialize all 31 fields as null
+    attrs = {
+        "metal_type": None, "metal_color": None, "stone_primary_color": None,
+        "product_type": None, "gender": None, "center_stone_type": None,
+        "center_stone_shape": None, "side_stone_1_type": None, "side_stone_1_shape": None,
+        "side_stone_2_type": None, "side_stone_2_shape": None, "engagement_set_type": None,
+        "engagement_ring_type": None, "wedding_band_type": None, "wedding_band_setting_type": None,
+        "wedding_band_stone_continuity": None, "fashion_ring_type": None, "earring_type": None,
+        "necklace_type": None, "bracelet_type": None, "accessory_type": None,
+        "theme": None, "occasion": None, "jewelry_shape": None, "motif": None,
+        "finishing_type": None, "estate_period": None, "holiday_code": None,
+        "chain_type": None, "clasp_type": None, "earring_back": None,
+    }
 
-    if "yellow gold" in text_lower or "18k yellow gold" in text_lower:
+    # 2. Try to parse the JSON returned by the Vision AI
+    for v_res in vision_results:
+        analysis_text = v_res.get("analysis", "")
+        if not analysis_text:
+            continue
+            
+        # Clean up markdown code blocks if the model added them
+        cleaned_json = re.sub(r'^```json\s*|^\s*```$', '', analysis_text.strip(), flags=re.MULTILINE)
+        
+        try:
+            vision_attrs = json.loads(cleaned_json)
+            if isinstance(vision_attrs, dict):
+                # Only update attrs if the vision AI found a non-null value
+                for key, value in vision_attrs.items():
+                    if key in attrs and value is not None:
+                        attrs[key] = value
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON from Vision AI: %s", analysis_text[:200])
+
+    # 3. Text-based overrides (Text is more reliable for exact metal karats and explicit specs)
+    if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
         attrs["metal_type"] = "18K Yellow Gold"
         attrs["metal_color"] = "Yellow"
-    elif "white gold" in text_lower or "18k white gold" in text_lower:
+    elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
         attrs["metal_type"] = "18K White Gold"
         attrs["metal_color"] = "White"
-    elif "rose gold" in text_lower or "18k rose gold" in text_lower:
+    elif "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
         attrs["metal_type"] = "18K Rose Gold"
         attrs["metal_color"] = "Rose"
-    else:
-        attrs["metal_type"] = None
-        attrs["metal_color"] = None
+    elif "platinum" in text_lower:
+        attrs["metal_type"] = "Platinum"
+        attrs["metal_color"] = "White"
 
-    # Determine product type from TEXT first, fallback to SKU heuristics
-    if "earring" in text_lower:
-        attrs["product_type"] = "Earrings"
-    elif "bracelet" in text_lower:
-        attrs["product_type"] = "Bracelets"
-    elif "necklace" in text_lower or "pendant" in text_lower:
-        attrs["product_type"] = "Necklaces"
-    elif "ring" in text_lower:
-        attrs["product_type"] = "Rings"
-    # Only use prefix guessing if text extraction completely failed
-    elif item_number:
-        if item_number.startswith("R"): 
-            attrs["product_type"] = "Rings"
-        # Remove 'B' from here, it's too ambiguous across different brands
-    else:
-        attrs["product_type"] = None
+    if "diamond" in text_lower and attrs.get("center_stone_type") is None:
+        attrs["center_stone_type"] = "Diamond"
 
-    attrs.update({
-        "stone_primary_color": None, "center_stone_type": None, "center_stone_shape": None,
-        "side_stone_1_type": None, "side_stone_1_shape": None, "side_stone_2_type": None,
-        "side_stone_2_shape": None, "engagement_set_type": None, "engagement_ring_type": None,
-        "wedding_band_type": None, "wedding_band_setting_type": None, "wedding_band_stone_continuity": None,
-        "fashion_ring_type": None, "earring_type": None, "necklace_type": None, "bracelet_type": None,
-        "accessory_type": None, "theme": None, "occasion": None, "jewelry_shape": None,
-        "motif": None, "finishing_type": None, "estate_period": None, "holiday_code": None,
-        "chain_type": None, "clasp_type": None, "earring_back": None,
-    })
     return attrs
 
 
@@ -397,7 +448,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         local_name = ARTIFACTS_DIR / f"svc_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.jpg"
         try:
             local_path = _download_image(img_url, local_name, referer=resolved_url)
-            vision = _analyze_image(local_path, f"{view_type} view analysis for {brand} {item_number}")
+            vision = _analyze_image(local_path, VISION_EXTRACTION_PROMPT)
             vision_results.append(vision)
             images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
         except Exception as exc:
