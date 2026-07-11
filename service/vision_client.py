@@ -120,7 +120,7 @@ def analyze_image_openai_style(image_path: str, prompt: str, model: Optional[str
                 ],
             }
         ],
-        "max_tokens": 1024,
+        "max_tokens": 4096,
         "temperature": 0.2,
     }
 
