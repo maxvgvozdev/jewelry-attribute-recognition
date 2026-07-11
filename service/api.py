@@ -74,7 +74,7 @@ Required JSON keys and valid examples:
   "earring_back": "Push"
 }
 
-Return ONLY the raw JSON object, no markdown, no explanation."""
+CRITICAL INSTRUCTION: You must output ONLY the raw JSON object. Do NOT output your reasoning, thoughts, or step-by-step analysis. Do NOT wrap it in markdown code blocks. Start your response with '{' and end with '}'."""
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -283,6 +283,33 @@ def _pick_best_images(image_urls: List[str], prefer_cdn_host: Optional[str] = No
             return cdn[:3]
     return image_urls[:3]
 
+def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """Extracts a JSON object from text, even if surrounded by reasoning or markdown."""
+    if not text:
+        return None
+        
+    import re
+    # 1. Try to find a JSON code block ```json ... ```
+    json_block_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
+    if json_block_match:
+        try:
+            return json.loads(json_block_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # 2. Fallback: Find the first '{' and the very last '}' in the entire text.
+    # This catches models that output thoughts and then paste JSON at the end.
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    
+    if first_brace != -1 and last_brace > first_brace:
+        json_str = text[first_brace : last_brace + 1]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 def _build_attributes_from_text_and_vision(
     brand: str,
@@ -313,18 +340,14 @@ def _build_attributes_from_text_and_vision(
         if not analysis_text:
             continue
             
-        # Clean up markdown code blocks if the model added them
-        cleaned_json = re.sub(r'^```json\s*|^\s*```$', '', analysis_text.strip(), flags=re.MULTILINE)
+        # Use the JSON hunter to find the object, bypassing any reasoning text
+        vision_attrs = _extract_json_from_text(analysis_text)
         
-        try:
-            vision_attrs = json.loads(cleaned_json)
-            if isinstance(vision_attrs, dict):
-                # Only update attrs if the vision AI found a non-null value
-                for key, value in vision_attrs.items():
-                    if key in attrs and value is not None:
-                        attrs[key] = value
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse JSON from Vision AI: %s", analysis_text[:200])
+        if vision_attrs and isinstance(vision_attrs, dict):
+            # Only update attrs if the vision AI found a non-null value
+            for key, value in vision_attrs.items():
+                if key in attrs and value is not None:
+                    attrs[key] = value
 
     # 3. Text-based overrides (Text is more reliable for exact metal karats and explicit specs)
     if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
