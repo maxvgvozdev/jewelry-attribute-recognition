@@ -48,6 +48,31 @@ def _headers() -> Dict[str, str]:
 
 
 def _encode_image(image_path: str) -> str:
+    # Attempt to compress/resize large images to prevent OpenRouter 400 payload errors
+    try:
+        from PIL import Image
+        from io import BytesIO
+        
+        with Image.open(image_path) as img:
+            # Convert to RGB (removes alpha channel which bloats PNGs)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            
+            # Resize if larger than 1024px on any side
+            img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+            
+            # Save to a bytes buffer as a highly compressed JPEG
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=85)
+            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+            
+    except ImportError:
+        # Fallback to raw base64 if Pillow is not installed
+        pass
+    except Exception as e:
+        logger.warning("Image compression failed, falling back to raw base64: %s", e)
+
+    # Original fallback
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
