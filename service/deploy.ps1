@@ -2,7 +2,7 @@
  $ErrorActionPreference = "Stop"
 
 Write-Host "1. Stopping existing scheduled task..." -ForegroundColor Cyan
-Stop-ScheduledTask -TaskName "JewelryAgentAPI" -ErrorAction SilentlyContinue
+Stop-ScheduledTask -TaskName "JewelryAgentAPI" -ErrorAction SilentlyContinue | Out-Null
 
 Write-Host "2. Pulling latest code from GitHub..." -ForegroundColor Cyan
 git pull origin master
@@ -11,7 +11,7 @@ Write-Host "3. Waiting for process to fully exit..." -ForegroundColor Cyan
 Start-Sleep -Seconds 2
 
 Write-Host "4. Starting scheduled task..." -ForegroundColor Cyan
-Start-ScheduledTask -TaskName "JewelryAgentAPI"
+Start-ScheduledTask -TaskName "JewelryAgentAPI" | Out-Null
 
 Write-Host "5. Waiting for startup..." -ForegroundColor Cyan
 Start-Sleep -Seconds 4
