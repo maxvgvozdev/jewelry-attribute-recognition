@@ -7,7 +7,9 @@ Run (development): uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 Run (production): python service_runner.py
 Install as Windows service: python api.py install
 """
-
+import os
+with open(r"C:\Deploy\jewelry-attribute-recognition\service\env_debug.log", "w") as f:
+    f.write(f"API_URL: {os.getenv('VISION_API_URL', 'NOT SET')}\nCWD: {os.getcwd()}\n")
 import os
 import sys
 import json
