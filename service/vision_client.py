@@ -126,7 +126,7 @@ def analyze_image_openai_style(image_path: str, prompt: str, model: Optional[str
 
     url = f"{VISION_API_URL}/v1/chat/completions"
     logger.info("Calling remote OpenAI-style vision endpoint: %s model=%s", url, model)
-    resp = requests.post(url, headers=_headers(), json=payload, timeout=120)
+    resp = requests.post(url, headers=_headers(), json=payload, timeout=600)
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
@@ -160,7 +160,7 @@ def analyze_image_ollama_style(image_path: str, prompt: str, model: Optional[str
     url_chat = f"{VISION_API_URL}/api/chat"
     logger.info("Calling remote Ollama-style chat: %s model=%s", url_chat, model)
     try:
-        resp = requests.post(url_chat, headers=_headers(), json=payload_chat, timeout=120)
+        resp = requests.post(url_chat, headers=_headers(), json=payload_chat, timeout=600)
         resp.raise_for_status()
         data = resp.json()
         content = data.get("message", {}).get("content", "")
@@ -182,7 +182,7 @@ def analyze_image_ollama_style(image_path: str, prompt: str, model: Optional[str
             "options": {"temperature": 0.2, "num_predict": 1024},
         }
         url_gen = f"{VISION_API_URL}/api/generate"
-        resp = requests.post(url_gen, headers=_headers(), json=payload_gen, timeout=120)
+        resp = requests.post(url_gen, headers=_headers(), json=payload_gen, timeout=600)
         resp.raise_for_status()
         data = resp.json()
         content = data.get("response", "")
