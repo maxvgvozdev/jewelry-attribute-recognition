@@ -1,200 +1,231 @@
 """
-Firecrawl V2 proxy script.
-Searches for a product page and extracts structured product data and images natively.
-Usage: python firecrawl_proxy.py search "<query>"
+Vision analysis client for a remote Spark machine / remote model server.
+
+Run the vision model on a separate host and point this client at it
+using environment variables:
+
+  VISION_API_URL  - http://<spark-host>:<port>
+  VISION_API_KEY  - optional bearer token
+  VISION_MODEL    - model identifier on the remote server
+  VISION_PROVIDER - "openai" | "ollama" | "generic"
+
+Provider behavior
+-----------------
+- openai / openai-style / vllm:
+    POST {VISION_API_URL}/v1/chat/completions
+    multipart image not required; image is sent as base64 data URI
+- ollama:
+    POST {VISION_API_URL}/api/chat (fallback: /api/generate)
+    image sent as base64 inside the JSON payload
+- generic:
+    POST {VISION_API_URL}/analyze
+    multipart/form-data with image + prompt + optional model
 """
-import sys
-import json
+
 import os
-import re
+import json
+import base64
+import logging
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import requests
-from typing import Optional, List, Dict, Any
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-API_URL = "https://api.firecrawl.com/v2"
+logger = logging.getLogger("jewelry.vision")
 
-# Map of brand keywords to their official website domains
-OFFICIAL_SITES = {
-    'cartier': ['www.cartier.com', 'media.cartier.com'],
-    'tiffany': ['www.tiffany.com', 'www.tiffany.ca'],
-    'vancleef': ['www.vancleefarpels.com'],
-    'yurman': ['www.davidyurman.com'],
-    'brilliant earth': ['www.brilliantearth.com'],
-}
-# Note: 'van cleef' is implicitly handled by checking if 'van' or 'cleef' is in the brand_guess.
+VISION_API_URL = os.getenv("VISION_API_URL", "http://localhost:11434").rstrip("/")
+VISION_API_KEY = os.getenv("VISION_API_KEY", "")
+VISION_MODEL = os.getenv("VISION_MODEL", "llava")
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "ollama").lower()
 
-# Pre-compiled set for O(1) lookup to speed up URL filtering
-SKIP_URL_KEYWORDS = {'/search?', '/category/', '/collections/', '/blog', '/news'}
 
-# LLM Prompt for text extraction
-TEXT_EXTRACTION_PROMPT = """IGNORE the website header, footer, and all navigation menus. 
-Focus ONLY on the main product details section for this specific jewelry item.
-Extract the product title, full description text, materials/metals used, and gemstones used."""
+def _headers() -> Dict[str, str]:
+    h: Dict[str, str] = {"Content-Type": "application/json"}
+    if VISION_API_KEY:
+        h["Authorization"] = f"Bearer {VISION_API_KEY}"
+    return h
 
-def main() -> None:
-    if len(sys.argv) < 3:
-        print(json.dumps({"error": "Usage: python firecrawl_proxy.py search <query>"}))
-        sys.exit(1)
 
-    command = sys.argv[1]
-    query = sys.argv[2]
-    api_key = os.getenv("FIRECRAWL_API_KEY")
+def _encode_image(image_path: str) -> str:
+    # Attempt to compress/resize large images to prevent OpenRouter 400 payload errors
+    try:
+        from PIL import Image
+        from io import BytesIO
+        
+        with Image.open(image_path) as img:
+            # Convert to RGB (removes alpha channel which bloats PNGs)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            
+            # Resize if larger than 1024px on any side
+            img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+            
+            # Save to a bytes buffer as a highly compressed JPEG
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=85)
+            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+            
+    except ImportError:
+        # Fallback to raw base64 if Pillow is not installed
+        pass
+    except Exception as e:
+        logger.warning("Image compression failed, falling back to raw base64: %s", e)
 
-    if not api_key:
-        print(json.dumps({"error": "Set FIRECRAWL_API_KEY env var"}))
-        sys.exit(1)
+    # Original fallback
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+
+def _mime_type(image_path: str) -> str:
+    mt, _ = mimetypes.guess_type(image_path)
+    return mt or "image/jpeg"
+
+
+def health_check(timeout: int = 10) -> Dict[str, Any]:
+    """Best-effort check against the remote vision service."""
+    try:
+        if VISION_PROVIDER in ("openai", "openai-style", "vllm"):
+            url = f"{VISION_API_URL}/v1/models"
+            resp = requests.get(url, headers=_headers(), timeout=timeout)
+        elif VISION_PROVIDER in ("ollama",):
+            url = f"{VISION_API_URL}/api/tags"
+            resp = requests.get(url, headers=_headers(), timeout=timeout)
+        else:
+            url = VISION_API_URL
+            resp = requests.get(url, headers=_headers(), timeout=timeout)
+
+        resp.raise_for_status()
+        return {"ok": True, "url": url, "status_code": resp.status_code}
+    except Exception as exc:
+        return {"ok": False, "url": VISION_API_URL, "error": str(exc)}
+
+
+def analyze_image_openai_style(image_path: str, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    model = model or VISION_MODEL
+    b64 = _encode_image(image_path)
+    mime = _mime_type(image_path)
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 4096,
+        "temperature": 0.2,
     }
 
-    if command == "search":
-        product_page_url = None
-        
-        # Extract brand and SKU from query
-        words = query.split()
-        brand_guess = words[0].lower() if words else ""
-        sku = words[-1] if len(words) > 1 else ""
-        sku_lower = sku.lower()
+    url = f"{VISION_API_URL}/v1/chat/completions"
+    logger.info("Calling remote OpenAI-style vision endpoint: %s model=%s", url, model)
+    resp = requests.post(url, headers=_headers(), json=payload, timeout=600)
+    resp.raise_for_status()
+    data = resp.json()
+    content = data["choices"][0]["message"]["content"]
+    return {
+        "provider": "openai-style",
+        "model": model,
+        "image": image_path,
+        "prompt": prompt,
+        "analysis": content,
+        "raw": data,
+    }
 
-        # Find official domains for this brand
-        official_domains = []
-        for key, domains in OFFICIAL_SITES.items():
-            # Handle "van cleef" by checking both words against the brand guess
-            key_parts = key.split()
-            if any(part in brand_guess for part in key_parts):
-                official_domains = domains
-                break
 
-        # Step 1: Search via Firecrawl V2
-        try:
-            search_queries = [query]
-            if official_domains:
-                search_queries.insert(0, f"site:{official_domains[0]} {query}")
+def analyze_image_ollama_style(image_path: str, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    model = model or VISION_MODEL
+    b64 = _encode_image(image_path)
 
-            for search_query in search_queries:
-                search_payload = {
-                    "query": search_query,
-                    "limit": 10,
-                    "searchType": "Web",
-                    "country": "US",
-                    "timeout": 30000
-                }
-                
-                search_resp = requests.post(f"{API_URL}/search", headers=headers, json=search_payload, timeout=60)
-                search_resp.raise_for_status()
-                search_data = search_resp.json()
-                
-                web_results = search_data.get("data", {}).get("web", [])
-                
-                # Filter out search/category/blog pages using pre-compiled set for O(1) lookup
-                valid_results = [
-                    r for r in web_results 
-                    if isinstance(r, dict) and not (SKIP_URL_KEYWORDS & set(r.get("url", "").lower().split('/')))
-                ]
-                
-                # Extract URL helper to avoid repeating .get() and .lower() multiple times
-                def get_url(result: Dict[str, Any]) -> str:
-                    return result.get("url", "").lower()
-
-                # Priority 1: Official site with exact SKU in URL
-                if official_domains and not product_page_url:
-                    for result in valid_results:
-                        page_url = get_url(result)
-                        if sku_lower in page_url:
-                            if any(domain in page_url for domain in official_domains):
-                                product_page_url = result.get("url")
-                                break
-                                
-                # Priority 2: Any site with exact SKU in URL
-                if not product_page_url:
-                    for result in valid_results:
-                        if sku_lower in get_url(result):
-                            product_page_url = result.get("url")
-                            break
-
-                # Priority 3: First valid result
-                if not product_page_url and valid_results:
-                    product_page_url = valid_results[0].get("url")
-
-                if product_page_url:
-                    break
-
-        except requests.exceptions.Timeout:
-            print(json.dumps({"error": "Firecrawl search timed out."}))
-            sys.exit(1)
-        except requests.exceptions.HTTPError as e:
-            print(json.dumps({"error": f"Firecrawl HTTP error during search: {e.response.status_code} - {e.response.text[:200]}"}))
-            sys.exit(1)
-        except Exception as e:
-            print(json.dumps({"error": f"Unexpected error during search: {str(e)}"}))
-            sys.exit(1)
-
-        if not product_page_url:
-            print(json.dumps({"data": []}))
-            return
-
-        # Step 2: Scrape using JSON for text + OG Image for the primary product shot
-        try:
-            scrape_payload = {
-                "url": product_page_url,
-                "formats": [
-                    {
-                        "type": "json",
-                        "prompt": TEXT_EXTRACTION_PROMPT,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "product_title": {"type": ["string", "null"]},
-                                "description": {"type": ["string", "null"]},
-                                "materials_text": {"type": ["string", "null"]}
-                            }
-                        }
-                    }
-                ],
-                "onlyMainContent": False,
-                "waitFor": 5000,
-                "blockAds": True
+    payload_chat = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [b64],
             }
-            
-            scrape_resp = requests.post(f"{API_URL}/scrape", headers=headers, json=scrape_payload, timeout=120)
-            scrape_resp.raise_for_status()
-            scrape_data = scrape_resp.json()
-            
-            # 1. Extract perfect text from JSON format
-            extracted_data = scrape_data.get("data", {}).get("json", {})
-            title = extracted_data.get("product_title", "")
-            desc = extracted_data.get("description", "")
-            materials = extracted_data.get("materials_text", "")
-            text_parts = [p for p in [title, desc, materials] if p]
-            text_context = "\n".join(text_parts)
-            
-            # 2. Extract the primary product image safely from metadata
-            clean_images = []
-            og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
-            
-            if og_image and og_image.startswith("http"):
-                # Use the OG image EXACTLY as provided to avoid triggering 
-                # strict CDN hotlink protection on raw master files.
-                clean_images.append(og_image)
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2, "num_predict": 1024},
+    }
 
-            output_item = {
-                "url": product_page_url,
-                "description": text_context,
-                "images": clean_images
-            }
+    url_chat = f"{VISION_API_URL}/api/chat"
+    logger.info("Calling remote Ollama-style chat: %s model=%s", url_chat, model)
+    try:
+        resp = requests.post(url_chat, headers=_headers(), json=payload_chat, timeout=600)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("message", {}).get("content", "")
+        return {
+            "provider": "ollama",
+            "model": model,
+            "image": image_path,
+            "prompt": prompt,
+            "analysis": content,
+            "raw": data,
+        }
+    except requests.HTTPError as exc:
+        logger.warning("Remote Ollama /api/chat failed (%s), falling back to /api/generate", exc)
+        payload_gen = {
+            "model": model,
+            "prompt": prompt,
+            "images": [b64],
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 1024},
+        }
+        url_gen = f"{VISION_API_URL}/api/generate"
+        resp = requests.post(url_gen, headers=_headers(), json=payload_gen, timeout=600)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("response", "")
+        return {
+            "provider": "ollama-generate",
+            "model": model,
+            "image": image_path,
+            "prompt": prompt,
+            "analysis": content,
+            "raw": data,
+        }
 
-            print(json.dumps({"data": [output_item]}))
 
-        except requests.exceptions.Timeout:
-            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
-        except requests.exceptions.HTTPError as e:
-            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
-        except Exception as e:
-            print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
+def analyze_image_generic(image_path: str, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    model = model or VISION_MODEL
+    url = f"{VISION_API_URL}/analyze"
 
-if __name__ == "__main__":
-    main()
+    with open(image_path, "rb") as f:
+        files = {"image": (Path(image_path).name, f, _mime_type(image_path))}
+        data = {"prompt": prompt, "model": model}
+        logger.info("Calling remote generic vision endpoint: %s model=%s", url, model)
+        resp = requests.post(url, files=files, data=data, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "provider": "generic",
+            "model": model,
+            "image": image_path,
+            "prompt": prompt,
+            "analysis": data.get("analysis") or data.get("text") or json.dumps(data),
+            "raw": data,
+        }
+
+
+def analyze_image(image_path: str, question: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Unified entry point. Dispatches to the configured remote provider backend."""
+    provider = VISION_PROVIDER
+    if provider in ("openai", "openai-style", "vllm"):
+        return analyze_image_openai_style(image_path, question, model)
+    if provider in ("ollama",):
+        return analyze_image_ollama_style(image_path, question, model)
+    if provider in ("generic",):
+        return analyze_image_generic(image_path, question, model)
+
+    logger.warning("Unknown VISION_PROVIDER=%s, defaulting to ollama", provider)
+    return analyze_image_ollama_style(image_path, question, model)
