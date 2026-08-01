@@ -4,12 +4,9 @@ Integrates the jewelry-attribute-recognition skill with Microsoft Business Centr
 via a REST API endpoint.
 
 Run (development): uvicorn api:app --host 0.0.0.0 --port 8000 --reload
-Run (production): python service_runner.py
-Install as Windows service: python api.py install
+Run (production via Task Scheduler): python.exe api.py
 """
-import os
-with open(r"C:\Deploy\jewelry-attribute-recognition\service\env_debug.log", "w") as f:
-    f.write(f"API_URL: {os.getenv('VISION_API_URL', 'NOT SET')}\nCWD: {os.getcwd()}\n")
+
 import os
 import sys
 import json
@@ -24,18 +21,13 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
-import win32serviceutil
-import win32service
-import win32event
-import servicemanager
 
 try:
     import uvicorn as _uvicorn
 except Exception:
-    _uvicorn = None  # type: ignore[assignment]
+    _uvicorn = None
 
 # Strict schema prompt for Vision AI to extract all 31 BC365 fields
 from config import VISION_EXTRACTION_PROMPT
@@ -48,24 +40,20 @@ SERVICE_DISPLAY_NAME = "Jewelry Attribute Recognition API"
 SERVICE_DESCRIPTION = "API service exposing jewelry attribute recognition to Microsoft Business Central"
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
-REFERENCES_DIR = SKILL_ROOT / "references"
-RESULTS_DIR = SKILL_ROOT / "results"
 ARTIFACTS_DIR = SKILL_ROOT / "artifacts"
 FIRECRAWL_SCRIPT = SKILL_ROOT / "scripts" / "firecrawl_proxy.py"
 
 # Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
-# resolve correctly when launched by pywin32's pythonservice.exe.
+# resolve correctly when launched by Task Scheduler.
 if str(SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_ROOT))
 
-# Ensure directories exist
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure artifacts directory exists
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Runtime config / env overrides
 API_PORT = int(os.getenv("JEWELRY_API_PORT", "8000"))
 API_HOST = os.getenv("JEWELRY_API_HOST", "0.0.0.0")
-ALLOWED_ORIGINS = os.getenv("JEWELRY_API_ALLOWED_ORIGINS", "*").split(",")
 LOG_LEVEL = os.getenv("JEWELRY_API_LOG_LEVEL", "INFO")
 
 
@@ -197,7 +185,6 @@ def _check_upc(upc_code: str) -> Dict[str, Any]:
         html = resp.text
         if "currently has no record in our database" in html:
             return {"found": False, "url": url}
-        import re
         title_m = re.search(r"<title>\s*UPC\s+\d+\s*-\s*(.*?)\s*\|\s*upcitemdb\.com\s*</title>", html)
         title = title_m.group(1).strip() if title_m else ""
         return {"found": bool(title), "title": title, "url": url}
@@ -217,7 +204,6 @@ def _download_image(url: str, dest: Path, referer: str = "") -> str:
             headers["Referer"] = referer
             
         # CRITICAL FIX: Use tuple (connect_timeout, read_timeout).
-        # This prevents CDNs from hanging the download for 10+ minutes by drip-feeding data.
         resp = requests.get(url, timeout=(10, 30), headers=headers, stream=True)
         resp.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -237,22 +223,11 @@ def _analyze_image(image_path: str, question: str) -> Dict[str, Any]:
     return analyze_image(image_path, question)
 
 
-def _pick_best_images(image_urls: List[str], prefer_cdn_host: Optional[str] = None) -> List[str]:
-    """Return up to 3 distinct image URLs, preferring brand CDN if host matches."""
-    if not image_urls:
-        return []
-    if prefer_cdn_host:
-        cdn = [u for u in image_urls if prefer_cdn_host in u]
-        if cdn:
-            return cdn[:3]
-    return image_urls[:3]
-
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     """Extracts a JSON object from text, even if surrounded by reasoning or markdown."""
     if not text:
         return None
         
-    import re
     # 1. Try to find a JSON code block ```json ... ```
     json_block_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
     if json_block_match:
@@ -262,7 +237,6 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
             pass
 
     # 2. Fallback: Find the first '{' and the very last '}' in the entire text.
-    # This catches models that output thoughts and then paste JSON at the end.
     first_brace = text.find('{')
     last_brace = text.rfind('}')
     
@@ -275,13 +249,13 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+
 def _build_attributes_from_text_and_vision(
     brand: str,
     text: str,
     vision_results: List[Dict[str, Any]],
     item_number: str,
 ) -> Dict[str, Any]:
-    import re
     text_lower = (text or "").lower()
     
     # 1. Initialize all 31 fields as null
@@ -319,11 +293,12 @@ def _build_attributes_from_text_and_vision(
         attrs["metal_color"] = "Yellow"
     elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
         attrs["metal_type"] = "18K White Gold"
-        attrs["metal_color"] = "White"
+        attrs["metal_color"] = "white"  # Fixed casing to match BC365 schema
     elif "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
         attrs["metal_type"] = "18K Rose Gold"
         attrs["metal_color"] = "Rose"
-    elif "platinum" in text_lower:
+
+    if "platinum" in text_lower:
         attrs["metal_type"] = "Platinum"
         attrs["metal_color"] = "White"
 
@@ -347,7 +322,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     confidence_notes: List[str] = []
     resolved_url = ""
     images: List[ImageEvidence] = []
-    page_text = ""  # Initialize once at the top
+    page_text = ""
     item_number = vendor_item_number
 
     if upc_code:
@@ -366,7 +341,6 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     else:
         raise HTTPException(status_code=400, detail="Either vendor_item_number or upc_code must be provided.")
 
-    items = []
     image_urls = []
     
     if _firecrawl_available():
@@ -375,10 +349,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             items = search_result.get("data", []) or []
             if items:
                 resolved_url = items[0].get("url", "")
-                # Capture text from V2 proxy
                 page_text = items[0].get("description", "") or ""
                 
-                # Capture images from V2 proxy
                 firecrawl_images = items[0].get("images", [])
                 if firecrawl_images:
                     image_urls = firecrawl_images
@@ -399,7 +371,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         else:
             raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
 
-    # Get host for CDN preference logic (Moved up, NO MORE page_text = "" !!!)
+    # Get host for CDN preference logic
     try:
         from urllib.parse import urlparse
         parsed = urlparse(resolved_url)
@@ -407,29 +379,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
     except Exception:
         host = ""
 
-    # Only do raw Python fallback scrape if Firecrawl found NOTHING
-    if resolved_url and not image_urls and not page_text:
-        try:
-            page_resp = requests.get(resolved_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-            page_resp.raise_for_status()
-            html = page_resp.text
-            snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
-            page_text = f"{snippet} {html[:2000]}"
-            image_urls = re.findall(r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png)(?:\?[^\s\"'<>]*)?", html)
-            if not image_urls:
-                image_urls = re.findall(r"https?://[^\s\"'<>]+[?&](?:wid|qlt|sw|sh|imwidth|imheight)=[^\s\"'<>]+", html)
-        except Exception as exc:
-            logger.warning("Page scrape failed: %s", exc)
-            confidence_notes.append(f"Direct page scrape failed for {resolved_url}; using search snippet only.")
-            snippet = f"{items[0].get('title', '')} {items[0].get('description', '')}" if items else ""
-            page_text = snippet
-                
-    chosen = _pick_best_images(image_urls, prefer_cdn_host="davidyurman" if "davidyurman" in host else None)
-    if not chosen:
-        confidence_notes.append("No downloadable images found from resolved page; attributes may be text-only.")
-
     vision_results: List[Dict[str, Any]] = []
-    for idx, img_url in enumerate(chosen[:3], start=1):
+    for idx, img_url in enumerate(image_urls[:3], start=1):
         view_map = {1: "front", 2: "side", 3: "additional"}
         view_type = view_map.get(idx, "additional")
         local_name = ARTIFACTS_DIR / f"svc_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.jpg"
@@ -492,6 +443,20 @@ async def recognize(req: JewelryRequest):
 # ---------------------------------------------------------------------------
 # Windows Service wrapper
 # ---------------------------------------------------------------------------
+# NOTE: Currently disabled. We are using Task Scheduler running "python.exe api.py" instead
+# because the .venv pythonservice.exe had DLL registration issues on this server.
+# To re-enable: 
+#   1. Install pywin32 globally or fix the .venv pywin32_postinstall.py -install (as Admin)
+#   2. Change Task Scheduler action to use the .venv\pythonservice.exe
+#   3. Change this if __name__ block to: if len(sys.argv) > 1: win32serviceutil.HandleCommandLine(JewelryAPIService)
+# ---------------------------------------------------------------------------
+try:
+    import win32serviceutil
+    import win32service
+    import win32event
+    import servicemanager
+except ImportError:
+    pass # pywin32 is not installed on this machine
 
 class JewelryAPIService(win32serviceutil.ServiceFramework):
     _svc_name_ = SERVICE_NAME
@@ -511,19 +476,10 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
 
     def SvcDoRun(self):
         try:
-            # Trace log (your addition - great for debugging)
-            self._trace = os.path.join(tempfile.gettempdir(), "jewelry_svc_trace.log")
-            with open(self._trace, "a", encoding="utf-8") as f:
-                f.write(f"SvcDoRun START at {datetime.utcnow()}\n")
-
-            # Fix working directory
             service_dir = Path(__file__).resolve().parent
             os.chdir(service_dir)
             if service_dir not in sys.path:
                 sys.path.insert(0, str(service_dir))
-
-            with open(self._trace, "a", encoding="utf-8") as f:
-                f.write(f"CWD set to {os.getcwd()}\n")
 
             if _uvicorn is None:
                 raise RuntimeError("uvicorn could not be imported.")
@@ -534,24 +490,14 @@ class JewelryAPIService(win32serviceutil.ServiceFramework):
                 (self._svc_name_, ""),
             )
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-            
-            with open(self._trace, "a", encoding="utf-8") as f:
-                f.write("SERVICE_RUNNING reported\n")
-                
             logger.info("Windows service started, launching uvicorn")
 
-            # Use Server object for graceful stop
             config = _uvicorn.Config(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
             self._uvicorn_server = _uvicorn.Server(config)
             self._uvicorn_server.run()
 
         except Exception as exc:
             tb = traceback.format_exc()
-            try:
-                with open(self._trace, "a", encoding="utf-8") as f:
-                    f.write(f"EXCEPTION:\n{tb}\n")
-            except Exception:
-                pass
             try:
                 servicemanager.LogErrorMsg(f"Service failed: {exc}\n{tb}")
             except Exception:
@@ -565,4 +511,9 @@ if __name__ == "__main__":
         import uvicorn
         uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
     else:
-        win32serviceutil.HandleCommandLine(JewelryAPIService)
+        try:
+            win32serviceutil.HandleCommandLine(JewelryAPIService)
+        except Exception:
+            # Fallback to standard uvicorn run if pywin32 is not installed
+            import uvicorn
+            uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
