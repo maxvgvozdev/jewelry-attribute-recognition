@@ -44,13 +44,19 @@ Run this block in an elevated PowerShell to register the API as a background tas
 
 powershell
 
- $Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c .venv\Scripts\python.exe api.py >> logs\api.log 2>&1" -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition\service"
+  $Action = New-ScheduledTaskAction -Execute "cmd.exe" `
+    -Argument "/c .venv\Scripts\python.exe api.py >> logs\api.log 2>&1" `
+    -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition\"
+
  $Trigger = New-ScheduledTaskTrigger -AtStartup
  $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
  $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -DontStopOnIdleEnd -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
-Register-ScheduledTask -TaskName "JewelryAgentAPI" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Jewelry Attribute Recognition API" -Force
+Register-ScheduledTask -TaskName "JamilyAgentAPI" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Jewelry Attribute Recognition API" -Force
+
 (Note: We use cmd.exe /c with >> to properly route Python's stdout and stderr into a persistent text file, as Task Scheduler does not natively capture console output).
+
+Important: When editing the task in Task Scheduler, ensure the "Start in (optional)" field is explicitly set to C:\Deploy\jelly-attribute-recognition\service. If this is blank, the service will start in C:\Windows\System32 and fail to find your code.
 
 4.4. Start and Verify
 powershell
@@ -107,3 +113,6 @@ Unregister-ScheduledTask -TaskName "JewelryAgentAPI" -Confirm:$false
 API returns 500 on /api/jewelry/recognize: Check logs/api.log. This is usually a network timeout to external sites (UPC database, Firecrawl) or a missing dependency in vision_client.py.
 Task State is "Ready" but API is unreachable: The Python process likely crashed on startup (e.g., port 8000 already in use, or syntax error in api.py). Check logs/api.log for the Python traceback.
 Port 8000 already in use: Find the conflicting process with netstat -ano | findstr :8000 and kill it with taskkill /PID <pid> /F before restarting the task.
+API times out on /api/jewelry/recognize with a local network error:
+Ensure Tailscale is connected and running on the Windows Server. Run Test-NetConnection -ComputerName 100.88.93.128 -Port 11434. If this fails, the API cannot reach the local Vision AI.
+
