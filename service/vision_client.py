@@ -127,10 +127,10 @@ def main() -> None:
             print(json.dumps({"error": "Firecrawl search timed out."}))
             sys.exit(1)
         except requests.exceptions.HTTPError as e:
-            print(json.dumps({"error": f"Firecrawl HTTP error during search: {e.response.status_code} - {e.response.text[:200]"}))
+            print(json.dumps({"error": f"Firecrawl HTTP error during search: {e.response.status_code} - {e.response.text[:200]}"}))
             sys.exit(1)
         except Exception as e:
-            print(json.dumps({"error": f"Unexpected error during search: {str(e)}"))
+            print(json.dumps({"error": f"Unexpected error during search: {str(e)}"}))
             sys.exit(1)
 
         if not product_page_url:
