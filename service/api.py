@@ -19,6 +19,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -432,7 +434,7 @@ async def recognize(req: JewelryRequest):
     logger.info("Received jewelry request: brand=%s, vendor=%s, upc=%s", req.brand, req.vendor_item_number, req.upc_code)
     try:
         result = run_jewelry_workflow(req)
-        return JSONResponse(content=result)
+        return result  # FastAPI validates against JewelryResponse automatically
     except HTTPException:
         raise
     except Exception as exc:
