@@ -280,22 +280,20 @@ def _build_attributes_from_text_and_vision(
         if not analysis_text:
             continue
             
-        # Use the JSON hunter to find the object, bypassing any reasoning text
         vision_attrs = _extract_json_from_text(analysis_text)
         
         if vision_attrs and isinstance(vision_attrs, dict):
-            # Only update attrs if the vision AI found a non-null value
             for key, value in vision_attrs.items():
                 if key in attrs and value is not None:
                     attrs[key] = value
 
-    # 3. Text-based overrides (Text is more reliable for exact metal karats and explicit specs)
+    # 3. Text-based material overrides (Text is more reliable for exact metal karats)
     if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
         attrs["metal_type"] = "18K Yellow Gold"
         attrs["metal_color"] = "Yellow"
     elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
         attrs["metal_type"] = "18K White Gold"
-        attrs["metal_color"] = "white"  # Fixed casing to match BC365 schema
+        attrs["metal_color"] = "White"
     elif "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
         attrs["metal_type"] = "18K Rose Gold"
         attrs["metal_color"] = "Rose"
@@ -306,6 +304,66 @@ def _build_attributes_from_text_and_vision(
 
     if "diamond" in text_lower and attrs.get("center_stone_type") is None:
         attrs["center_stone_type"] = "Diamond"
+
+    # -----------------------------------------------------------------------
+    # 4. Text-based CATEGORIZATION fallbacks (Defense against Vision AI failures)
+    # Firecrawl text is highly structured; we use it to guarantee basic BC365 fields.
+    # -----------------------------------------------------------------------
+    
+    if not attrs.get("product_type"):
+        if "earring" in text_lower:
+            attrs["product_type"] = "Earrings"
+        elif "necklace" in text_lower or "pendant" in text_lower:
+            attrs["product_type"] = "Necklaces"
+        elif "bracelet" in text_lower or "bangle" in text_lower:
+            attrs["product_type"] = "Bracelets"
+        elif "engagement" in text_lower:
+            attrs["product_type"] = "Engagement Rings"
+        elif "wedding band" in text_lower:
+            attrs["product_type"] = "Wedding Bands"
+        elif "ring" in text_lower:
+            attrs["product_type"] = "Fashion Rings"
+
+    if not attrs.get("earring_type") and "earring" in text_lower:
+        if "stud earring" in text_lower or "earring stud" in text_lower:
+            attrs["earring_type"] = "Stud"
+        elif "drop earring" in text_lower or "dangle earring" in text_lower:
+            attrs["earring_type"] = "Drop"
+        elif "hoop earring" in text_lower:
+            attrs["earring_type"] = "Hoop"
+        elif "huggie" in text_lower:
+            attrs["earring_type"] = "Huggie"
+        elif "climber" in text_lower or "crawler" in text_lower:
+            attrs["earring_type"] = "Climber"
+
+    if not attrs.get("earring_back") and "earring" in text_lower:
+        if "push back" in text_lower or "push-back" in text_lower:
+            attrs["earring_back"] = "Push Back"
+        elif "friction back" in text_lower:
+            attrs["earring_back"] = "Friction Back"
+        elif "clip-on" in text_lower or "clip on" in text_lower:
+            attrs["earring_back"] = "Clip-On"
+
+    if not attrs.get("necklace_type") and ("necklace" in text_lower or "pendant" in text_lower):
+        if "pendant" in text_lower:
+            attrs["necklace_type"] = "Pendant"
+        elif "chain necklace" in text_lower:
+            attrs["necklace_type"] = "Chain"
+        elif "choker" in text_lower:
+            attrs["necklace_type"] = "Choker"
+        elif "lariat" in text_lower:
+            attrs["necklace_type"] = "Lariat"
+
+    if not attrs.get("bracelet_type") and ("bracelet" in text_lower or "bangle" in text_lower):
+        if "bangle" in text_lower:
+            attrs["bracelet_type"] = "Bangle"
+        elif "tennis bracelet" in text_lower:
+            attrs["bracelet_type"] = "Tennis"
+        elif "cuff" in text_lower:
+            attrs["bracelet_type"] = "Cuff"
+
+    if not attrs.get("jewelry_shape") and "round" in text_lower:
+        attrs["jewelry_shape"] = "Round"
 
     return attrs
 
