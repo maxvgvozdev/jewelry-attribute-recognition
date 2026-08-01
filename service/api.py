@@ -251,6 +251,308 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+# ---------------------------------------------------------------------------
+# BC365 Master Data Strict Schema Mapping
+# ---------------------------------------------------------------------------
+
+VALID_BC365_OPTIONS: Dict[str, set] = {
+    "metal_type": {
+        "09K", "10K", "10KGF", "12K", "14K", "14KGF", "18K", "19K", "22K", "24K", 
+        "950PAL", "950PL", "Cobalt", "Crystal", "Enamel", "Enhancers", "Glass", 
+        "Goldplated", "Leather", "Rubber", "Silicone", "STSILVER", "STSILVER/14K", 
+        "STSILVER/18K", "STSILVER/STSTEEL", "STSTEEL", "Steel/18K", "Wood", 
+        "Argentium Silver", "Pewter", "Silver Plated"
+    },
+    "metal_color": {
+        "Black", "Black/Yellow", "GREY", "White", "Yellow", "Yellow/White", 
+        "Yellow/White/Rose", "Rose", "Rose/White"
+    },
+    "stone_primary_color": {
+        "Black", "Blue", "Brown", "Dark Blue", "Golden", "Green", "Grey", 
+        "Multicolor", "Navy", "Orange", "Pink", "Purple", "Red", "Silver", 
+        "Turquoise", "White", "Yellow", "Aqua", "Light Blue"
+    },
+    "product_type": {
+        "Accessories", "Amulet-Mens", "Anklets", "Bracelets", "Charms", "Earrings", 
+        "Engagement Rings", "Engagement Set", "Fashion Rings", "Jewelry Sets", 
+        "Necklaces", "Wedding Bands", "Chain", "Engagement Semimounting", "Other", 
+        "Pin/Brooch", "Enhancers"
+    },
+    "gender": {"Baby", "Gents", "Ladies", "Unisex"},
+    "center_stone_type": {
+        "Abalone", "Agate", "Akoya Pearl", "Akoya white pearls", "Alexandrite", 
+        "Amazonite", "Amethyst", "Aquamarine", "Azurite", "Black Diamond", 
+        "Black Freshwater Pearl", "Black mother of pearl", "Black Onyx", 
+        "Black orchid", "Black spinel", "Black South Sea Pearl", "Blue Chalcedony", 
+        "Blue Diamond", "Blue Sapphire", "Blue Topaz", "Brown Diamond", "Carnelian", 
+        "Champagne citrine", "Champagne Diamond", "Charoite", "Chinese turquoise", 
+        "CHRYSOCOLLA", "Chrysoprase", "Citrine", "Cognac Diamonds", 
+        "Color Change Garnet", "Coral", "Corundum", "Crystal", 
+        "Cultured freshwater pearls", "Cultured Pearl", "CZ", "Diamond", "Emerald", 
+        "Forged carbon", "Freshwater Pearl", "Garnet", "Green Amethyst", 
+        "Green/chrome diopside", "Green onyx", "Green Tourmaline", 
+        "Hampton blue topaz", "Hematine", "Imperial Topaz", "Indian ruby", "Iolite", 
+        "Jade", "Jasper", "Labradorite", "Lapis lazuli", "Lemon citrine", 
+        "Lab-Grown Alexandrite", "Lab-Grown Amethyst", "Lab-Grown Diamond", 
+        "Lab-Grown Emerald", "Lab-Grown Iolite", "Lab-Grown Ruby", 
+        "Lab-Grown Sapphire", "Lab-Grown Tourmaline", "Madeira Citrine", "Malachite", 
+        "Meteorite", "Milky Aquamarine", "Moonstone", "Morganite", "Mother of Pearl", 
+        "Nephrite jade", "No Stone", "Olive quartz", "Opal", "orange sapphires", 
+        "OTHER", "Pearl", "Peridot", "Pietersite", "Pink Amethyst", "Pink Diamond", 
+        "Pink opal", "Pink Sapphire", "Pink tourmaline", "Pinolith", "Prasiolite", 
+        "Pyrite", "Quartz", "Rainbow moonstone", "Red tiger's eye", 
+        "Rhodolite garnet", "Rhodonite", "Riverstone", "Rubellite", "Ruby", 
+        "Rutilated quartz", "Sapphire", "Smoky Quartz", "Smoky Topaz", 
+        "South Sea Pearl", "Swarovski", "Tahitian Pearl", "Tantalum", "Tanzanite", 
+        "Tiger Eye", "Tiger iron", "Topaz", "Tourmaline", "Tourmilated quartz", 
+        "Tsavorite", "Turquoise", "Tyrone turquoise", "White Agate", 
+        "White South Sea Pearl", "White Topaz", "Yellow Diamond", "Yellow Sapphires", 
+        "Zircon", "Apatite", "Beryl", "Black Obsidian", "Bloodstone", "Chalcedony", 
+        "Demantoid", "Hematite", "Hessonite", "Kunzite", "Kyanite", "Marcasite", 
+        "Onyx", "Phrenite", "Rhodocrosite", "Selenite", "Sodalite", "Spessartite", 
+        "Spinel", "Almandine Garnet", "Agate Chalcedony", "CZ Cubic Zirconia", 
+        "Resin (Plastic)", "Akoya Cult Pearl", "Amber", "Bloodstone Chalcedony", 
+        "Black Onyx Chalcedony", "Boulder Opal", "Chrysocolla Chalcedony", 
+        "Chrysoprase Chalcedony", "Carnelian Chalcedony", "Chrome Tourmaline", 
+        "Chrome Diopside", "Conch Pearl", "Cult Pearl", "Demantoid Garnet", 
+        "Dendritic Agate Chal", "Dravite Tourmaline", "Fire Opal", "FW Cult Pearl", 
+        "Hessonite Garnet", "Indicolite Tourmaline", "Jasper Chalcedony", 
+        "Keshi Pearl", "Mabe Cultured Pearl", "Malaia Garnet", "Milky Chalcedony", 
+        "Moissonite", "Natural Pearl", "Onyx Chalcedony", "Paraiba Tourmaline", 
+        "Pyrope Garnet", "Prehnite", "Rock Crystal Quartz", "Rose Quartz", 
+        "Rutilated Quartz", "Seed Pearl", "Spessartine Garnet", "SS Cult Pearl", 
+        "Tourmalinated Quartz", "Tsavorite Garnet", "Tahitian SS Cult Pearl", 
+        "Watermelon Tourmaline", "Enamel", "Prasiolite Quartz", "Glass", 
+        "Other Gemstones", "Padparascha Sapphire", "Mandarin Garnet", 
+        "Tigers Eye Quartz", "Lotus Garnet", "Drusy Quartz", "Chrysoberyl", 
+        "Lacquer", "Multiple Gemstones", "Jelly Opal", "Black Opal", "Ebony (Wood)"
+    },
+    "center_stone_shape": {
+        "Asscher", "Cushion", "Emerald", "Heart shape", "Kite", "Marquise", "Oval", 
+        "Pear shape", "Radiant", "Round", "Square", "Trillion", "Unusual", "Princess", 
+        "Rose-Cut", "Bullet", "Moval", "Trapezoid", "Ashoka", "Bead", "Baguette", 
+        "Briolette", "Cabochon", "Checkerboard", "Hexagon", "Half Moon", "Crisscut", 
+        "Cushion Cabochon", "Crisscut Baguette", "Crisscut Emerald", 
+        "Crisscut Tapered Baguette", "Crisscut Lamour Classic", "Crisscut Lamour Pear", 
+        "Crisscut Lamour Cushion", "Crisscut Lamour Oval", "Crisscut Round", 
+        "Cushion Checkerboard", "Epaulet", "French Cut Baguette", "Geode", 
+        "Heart Cabochon", "Half Moon Step Cut", "Multiple Shapes", "Marquise Cabochon", 
+        "Oval Cabochon", "Old European", "Old Mine", "Oval Checkerboard", 
+        "Oval Rose Cut", "Pear Shape Cabochon", "Pear Shape Checkerboard", 
+        "Pear Shape Rose Cut", "Rose Cut", "Round Cabochon", "Round Checkerboard", 
+        "Rough", "Rondelle", "Shield", "Slice/Slab", "Square Checkerboard", 
+        "Square Step Cut", "Trillion Cabochon", "Trillion Checkerboard"
+    },
+    "side_stone_1_type": {"Diamond"},
+    "side_stone_1_shape": {
+        "Asscher", "Cushion", "Emerald", "Heart shape", "Kite", "Marquise", "Oval", 
+        "Pear shape", "Radiant", "Round", "Square", "Trillion", "Unusual", "Princess", 
+        "Rose-Cut", "Bullet", "Moval", "Trapezoid", "Ashoka", "Bead", "Baguette", 
+        "Briolette", "Cabochon", "Checkerboard", "Hexagon", "Half Moon", "Crisscut", 
+        "Cushion Cabochon", "Crisscut Baguette", "Crisscut Emerald", 
+        "Crisscut Tapered Baguette", "Crisscut Lamour Classic", "Crisscut Lamour Pear", 
+        "Crisscut Lamour Cushion", "Crisscut Lamour Oval", "Crisscut Round", 
+        "Cushion Checkerboard", "Epaulet", "French Cut Baguette", "Geode", 
+        "Heart Cabochon", "Half Moon Step Cut", "Multiple Shapes", "Marquise Cabochon", 
+        "Oval Cabochon", "Old European", "Old Mine", "Oval Checkerboard", 
+        "Oval Rose Cut", "Pear Shape Cabochon", "Pear Shape Checkerboard", 
+        "Pear Shape Rose Cut", "Rose Cut", "Round Cabochon", "Round Checkerboard", 
+        "Rough", "Rondelle", "Shield", "Slice/Slab", "Square Checkerboard", 
+        "Square Step Cut", "Trillion Cabochon", "Trillion Checkerboard", 
+        "Straight baguette", "Tapered baguette"
+    },
+    "side_stone_2_type": {
+        "Abalone", "Agate", "Akoya Pearl", "Alexandrite", "Amazonite", "Amethyst", 
+        "Aquamarine", "Black Diamond", "Black Freshwater Pearl", "Black mother of pearl", 
+        "Black Onyx", "Black orchid", "Black spinel", "Black South Sea Pearl", 
+        "Blue Chalcedony", "Blue Diamond", "Blue Sapphire", "Blue Topaz", 
+        "Brown Diamond", "Carnelian", "Champagne Diamond", "Charoite", 
+        "Chinese turquoise", "CHRYSOCOLLA", "Chrysoprase", "Citrine", 
+        "Color Change Garnet", "Coral", "Corundum", "Crystal", 
+        "Cultured freshwater pearls", "Cultured Pearl", "CZ", "Diamond", "Emerald", 
+        "Freshwater Pearl", "Garnet", "Green Amethyst", "Green/chrome diopside", 
+        "Green onyx", "Green Tourmaline", "Hematine", "Imperial Topaz", "Iolite", 
+        "Jade", "Jasper", "Labradorite", "Lapis lazuli", "Lab-Grown Alexandrite", 
+        "Lab-Grown Amethyst", "Lab-Grown Diamond", "Lab-Grown Emerald", 
+        "Lab-Grown Iolite", "Lab-Grown Ruby", "Lab-Grown Sapphire", 
+        "Lab-Grown Tourmaline", "Malachite", "Moonstone", "Morganite", 
+        "Mother of Pearl", "Nephrite jade", "No Stone", "Opal", "OTHER", "Pearl", 
+        "Peridot", "Pink Amethyst", "Pink Diamond", "Pink opal", "Pink Sapphire", 
+        "Pink tourmaline", "Prasiolite", "Pyrite", "Quartz", "Rainbow moonstone", 
+        "Rhodolite garnet", "Rhodonite", "Rubellite", "Ruby", "Rutilated quartz", 
+        "Sapphire", "Smoky Quartz", "Smoky Topaz", "South Sea Pearl", "Swarovski", 
+        "Tahitian Pearl", "Tantalum", "Tanzanite", "Tiger Eye", "Topaz", "Tourmaline", 
+        "Tourmilated quartz", "Tsavorite", "Turquoise", "White Agate", 
+        "White South Sea Pearl", "White Topaz", "Yellow Diamond", "Zircon", 
+        "Apatite", "Beryl", "Black Obsidian", "Bloodstone", "Chalcedony", 
+        "Demantoid", "Hematite", "Hessonite", "Kunzite", "Kyanite", "Marcasite", 
+        "Onyx", "Phrenite", "Rhodocrosite", "Selenite", "Sodalite", "Spessartite", 
+        "Spinel", "Almandine Garnet", "Agate Chalcedony", "CZ Cubic Zirconia", 
+        "Resin (Plastic)", "Akoya Cult Pearl", "Amber", "Bloodstone Chalcedony", 
+        "Black Onyx Chalcedony", "Boulder Opal", "Chrysocolla Chalcedony", 
+        "Chrysoprase Chalcedony", "Carnelian Chalcedony", "Chrome Tourmaline", 
+        "Chrome Diopside", "Conch Pearl", "Cult Pearl", "Demantoid Garnet", 
+        "Dendritic Agate Chal", "Dravite Tourmaline", "Fire Opal", "FW Cult Pearl", 
+        "Hessonite Garnet", "Indicolite Tourmaline", "Jasper Chalcedony", 
+        "Keshi Pearl", "Mabe Cultured Pearl", "Malaia Garnet", "Milky Chalcedony", 
+        "Moissonite", "Natural Pearl", "Onyx Chalcedony", "Paraiba Tourmaline", 
+        "Pyrope Garnet", "Prehnite", "Rock Crystal Quartz", "Rose Quartz", 
+        "Rutilated Quartz", "Seed Pearl", "Spessartine Garnet", "SS Cult Pearl", 
+        "Tourmalinated Quartz", "Tsavorite Garnet", "Tahitian SS Cult Pearl", 
+        "Watermelon Tourmaline", "Enamel", "Prasiolite Quartz", "Glass", 
+        "Other Gemstones", "Padparascha Sapphire", "Mandarin Garnet", 
+        "Tigers Eye Quartz", "Lotus Garnet", "Drusy Quartz", "Chrysoberyl", 
+        "Lacquer", "Multiple Gemstones", "Jelly Opal", "Black Opal", "Ebony (Wood)"
+    },
+    "side_stone_2_shape": {
+        "Asscher", "Cushion", "Emerald", "Heart shape", "Kite", "Marquise", "Oval", 
+        "Pear shape", "Radiant", "Round", "Square", "Trillion", "Unusual", "Princess", 
+        "Rose-Cut", "Bullet", "Moval", "Trapezoid", "Ashoka", "Bead", "Baguette", 
+        "Briolette", "Cabochon", "Checkerboard", "Hexagon", "Half Moon", "Crisscut", 
+        "Cushion Cabochon", "Crisscut Baguette", "Crisscut Emerald", 
+        "Crisscut Tapered Baguette", "Crisscut Lamour Classic", "Crisscut Lamour Pear", 
+        "Crisscut Lamour Cushion", "Crisscut Lamour Oval", "Crisscut Round", 
+        "Cushion Checkerboard", "Epaulet", "French Cut Baguette", "Geode", 
+        "Heart Cabochon", "Half Moon Step Cut", "Multiple Shapes", "Marquise Cabochon", 
+        "Oval Cabochon", "Old European", "Old Mine", "Oval Checkerboard", 
+        "Oval Rose Cut", "Pear Shape Cabochon", "Pear Shape Checkerboard", 
+        "Pear Shape Rose Cut", "Rose Cut", "Round Cabochon", "Round Checkerboard", 
+        "Rough", "Rondelle", "Shield", "Slice/Slab", "Square Checkerboard", 
+        "Square Step Cut", "Trillion Cabochon", "Trillion Checkerboard", 
+        "Straight baguette", "Tapered baguette"
+    },
+    "engagement_set_type": {"Engagement Ring", "Wedding Set"},
+    "engagement_ring_type": {
+        "Halo", "Side Stone", "Solitaire", "Three Stone", "Two Stone", "Eternity", 
+        "Invisible", "Flush", "Jacket/Wrap", "bead set"
+    },
+    "wedding_band_type": {
+        "Antique", "Classic", "Contemporary", "Modern", "Plain", "Vintage", 
+        "Eternity", "Bar", "Solitaire", "Three Stone", "U-Prong", "Jacket/Wrap"
+    },
+    "wedding_band_setting_type": {
+        "Channel", "Pave", "Prong", "Bezel", "Shared-Prong", "Tension", "Invisible", 
+        "Flush", "Jacket/Wrap", "bead set", "Bar", "Solitaire", "Three Stone", "U-Prong"
+    },
+    "wedding_band_stone_continuity": {
+        "Eternity", "Half Way", "Separated", "Three Quarter", "Religious"
+    },
+    "fashion_ring_type": {
+        "Cocktail Ring", "Halo", "Religious", "Sidestone", "Cord", "Two Stone", 
+        "Band", "Bypass", "Cluster", "Eternity Band", "Hug", "Link", "Mult Finger", 
+        "Signet", "Stack", "Stretch"
+    },
+    "earring_type": {
+        "Halo", "Stud", "Hoops", "dangle", "Huggies", "Threader", "Cluster", 
+        "Jacket", "Drops", "chandelier"
+    },
+    "necklace_type": {
+        "Bead", "Chain", "Choker", "Collar", "Pendant", "Statement", "Solitaire", 
+        "Locket", "Strand", "Lariat (Y)", "Link", "Charm"
+    },
+    "bracelet_type": {
+        "Bangle", "Bead", "Chain", "Charms", "Cable", "Link", "Leather", "Tennis", 
+        "Cuff", "Station", "Stretch"
+    },
+    "accessory_type": {
+        "Backpack", "Bag", "Belt", "Belt Buckle", "Brooch", "Card Holder", "Cufflink", 
+        "Key Rings", "Money Clips", "Pen Pouch", "Pocket Knife", "Strap", "Tie Bar", 
+        "Wallet", "Jewelry Case", "Jewelry Box", "Flask", "Flowers", "Keychain", 
+        "Lapel Pin", "Moneyclip", "Tie Accessory", "BR/CH (Bracelet and Charm)", 
+        "Keyring", "Business Card Holder", "Clutch", "Coin Purse", "Compact", 
+        "Fullbead Handbag", "Handbag", "Luggage Tag", "Lipstick Holder", "Mirror", 
+        "Pillbox", "Ballpoint Pen", "Fineliner Pen", "Fountain Pen", "Pencil", 
+        "Rollerball", "Set", "Cufflinks/Shirt Studs"
+    },
+    "theme": {
+        "Animal", "Flower", "Love", "Nature", "Religious", "Sea Life", "Space", 
+        "Round", "Sports", "Sun", "Wedding", "Star", "Tree", "Ocean", "Kids", "Machine", "Rock"
+    },
+    "occasion": {
+        "Anniversary", "Baby Birth", "Birthday", "Engagement", "Graduation", 
+        "Mothers Day", "Nature", "Sports", "Thanksgiving", "Valentine's Day"
+    },
+    "jewelry_shape": {
+        "Animal", "Bird", "Cross", "Fish", "Flower", "Heart", "Pentagon", "Star", 
+        "Tree", "Triangle", "Hexagon", "Octagon", "Angel", "Ball", "Bee", "Bicycle", 
+        "Bow", "Buddha", "Butterfly", "Chai", "Chevron (V)", "Circle", "Clover", 
+        "Coil", "Compass", "Crab", "Crescent Moon & Star", "Crown", "Crescent Moon", 
+        "Curved Bar", "Cushion", "Disc", "Dome", "Dog Tag", "Drop (Pear Shaped)", 
+        "Egg", "Evil Eye", "Fleur de Lis", "Feather", "Frog", "Geometric", "Hamsa", 
+        "Horseshoe", "Infinity", "Initial", "Key", "Kite", "Knot", "Ladybug", "Leaf", 
+        "Lotus", "Lightening/Thunder Bolt", "Boot", "Navette (Marquise Shaped)", 
+        "Number", "Oval", "Padlock", "Peace Sign", "Pineapple", "Rainbow", 
+        "Rectangle", "Sunburst", "Script", "Scroll", "Safety Pin", "Shamrock", 
+        "Shield", "Skull", "Snake", "Snowflake", "Square", "Star of David", "Swirl", 
+        "Tassel", "Triangular", "Twist", "Wave", "Wishbone", "Yin Yang", "Zodiac", "Zig Zag"
+    },
+    "motif": {
+        "Army", "Hawaii", "Kids", "Love", "Ocean", "Sea Life", "Space", "Sports", "Island"
+    },
+    "finishing_type": {
+        "Angle Satin", "Angle Stone", "Bead", "Cross Satin", "Disk 3", "Distress", 
+        "Hammered", "Religiouse", "Rock", "Satin", "Stone", "Treebark 1", "Treebark 3", 
+        "Brushed", "Engraving", "Milgrain", "Combination", "Damascus", 
+        "Filigree Engraved", "Florentine", "High Polish", "Oxidized", "Sandblasted"
+    },
+    "estate_period": {
+        "Art Deco (1920-1939)", "Art Nouveau (1890-1914)", "Edwardian (1901-1915)", 
+        "Georgian (1714-1837)", "Mid-Century (1940-1960)", "Retro (1940-1950)", 
+        "Victorian (1837-1901)"
+    },
+    "holiday_code": {
+        "Birthday", "Christmas", "Easter", "Halloween", "Judaica", 
+        "Fourth of July/Patriotic", "St. Patrick's Day", "Wedding Day"
+    },
+    "chain_type": {
+        "Rope", "Box", "Snake", "Cable", "Oval", "Paper Clip", "Figaro", "Mariner", 
+        "Franco", "Miami Cuban", "Curb", "Singapore", "Wheat", "Rolo", "Serpentine", 
+        "Ball", "Cobra", "Cuban", "Byzantine", "Herringbone", "Bead", "Anchor", 
+        "Omega", "Bismark", "Rosary", "Valentino", "Extension"
+    },
+    "clasp_type": {
+        "Omega", "Lobster", "Screw", "Toggle", "Bolo", "Magnetic", "Spring", 
+        "Barrel", "Box", "Safety", "Endless", "Plunger", "Latch", "Hidden", 
+        "French Hook", "Slide", "Kidney Wire", "Foldover", "Hook", "Push", "Snap", 
+        "Springring", "Eagle", "Diamond", "Pearl"
+    },
+    "earring_back": {
+        "Omega", "Screwback", "Clip", "Leverback", "Post", "La Pousette", 
+        "Threader", "Safety", "Friction", "Locking", "Wire", "Push", "Jumbo"
+    }
+}
+
+
+def _normalize_to_bc365(field: str, raw_value: Any) -> Optional[str]:
+    """
+    Forces a raw extracted string to match the EXACT valid BC365 Master Data option.
+    Uses case-insensitive exact matching, then longest-substring fallback for synonyms.
+    """
+    if not raw_value or not isinstance(raw_value, str):
+        return None
+        
+    valid_options = VALID_BC365_OPTIONS.get(field)
+    if not valid_options:
+        return None
+        
+    raw_clean = raw_value.strip()
+    raw_lower = raw_clean.lower()
+    
+    # 1. Exact match (case-insensitive)
+    for opt in valid_options:
+        if opt.lower() == raw_lower:
+            return opt
+            
+    # 2. Substring match (e.g. LLM says "Stud Earrings", we map it to "Stud")
+    # We pick the longest valid option that matches to avoid "White" matching when "18K White Gold" is better
+    best_match = None
+    for opt in valid_options:
+        opt_lower = opt.lower()
+        if opt_lower in raw_lower or raw_lower in opt_lower:
+            if best_match is None or len(opt) > len(best_match):
+                best_match = opt
+                
+    return best_match
 
 def _build_attributes_from_text_and_vision(
     brand: str,
@@ -285,85 +587,59 @@ def _build_attributes_from_text_and_vision(
         if vision_attrs and isinstance(vision_attrs, dict):
             for key, value in vision_attrs.items():
                 if key in attrs and value is not None:
-                    attrs[key] = value
+                    # FORCE VISION AI RESULTS THROUGH STRICT VALIDATOR
+                    attrs[key] = _normalize_to_bc365(key, str(value))
 
-    # 3. Text-based material overrides (Text is more reliable for exact metal karats)
+    # 3. Text-based material overrides (Text is highly reliable for exact metal karats)
     if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
-        attrs["metal_type"] = "18K Yellow Gold"
-        attrs["metal_color"] = "Yellow"
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold")
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
     elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
-        attrs["metal_type"] = "18K White Gold"
-        attrs["metal_color"] = "White"
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K White Gold")
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
     elif "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
-        attrs["metal_type"] = "18K Rose Gold"
-        attrs["metal_color"] = "Rose"
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold")
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
 
     if "platinum" in text_lower:
-        attrs["metal_type"] = "Platinum"
-        attrs["metal_color"] = "White"
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "Platinum") # Will return None as it's not in your Excel list
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
 
     if "diamond" in text_lower and attrs.get("center_stone_type") is None:
-        attrs["center_stone_type"] = "Diamond"
+        attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", "Diamond")
 
     # -----------------------------------------------------------------------
-    # 4. Text-based CATEGORIZATION fallbacks (Defense against Vision AI failures)
-    # Firecrawl text is highly structured; we use it to guarantee basic BC365 fields.
+    # 4. Text-based CATEGORIZATION fallbacks (Defense against Vision AI gaps)
     # -----------------------------------------------------------------------
     
     if not attrs.get("product_type"):
         if "earring" in text_lower:
-            attrs["product_type"] = "Earrings"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings")
         elif "necklace" in text_lower or "pendant" in text_lower:
-            attrs["product_type"] = "Necklaces"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces")
         elif "bracelet" in text_lower or "bangle" in text_lower:
-            attrs["product_type"] = "Bracelets"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets")
         elif "engagement" in text_lower:
-            attrs["product_type"] = "Engagement Rings"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
         elif "wedding band" in text_lower:
-            attrs["product_type"] = "Wedding Bands"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands")
         elif "ring" in text_lower:
-            attrs["product_type"] = "Fashion Rings"
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
 
     if not attrs.get("earring_type") and "earring" in text_lower:
         if "stud earring" in text_lower or "earring stud" in text_lower:
-            attrs["earring_type"] = "Stud"
+            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Stud")
         elif "drop earring" in text_lower or "dangle earring" in text_lower:
-            attrs["earring_type"] = "Drop"
+            attrs["earring_type"] = _normalize_to_bc365("earring_type", "dangle")
         elif "hoop earring" in text_lower:
-            attrs["earring_type"] = "Hoop"
+            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Hoops")
         elif "huggie" in text_lower:
-            attrs["earring_type"] = "Huggie"
-        elif "climber" in text_lower or "crawler" in text_lower:
-            attrs["earring_type"] = "Climber"
-
-    if not attrs.get("earring_back") and "earring" in text_lower:
-        if "push back" in text_lower or "push-back" in text_lower:
-            attrs["earring_back"] = "Push Back"
-        elif "friction back" in text_lower:
-            attrs["earring_back"] = "Friction Back"
-        elif "clip-on" in text_lower or "clip on" in text_lower:
-            attrs["earring_back"] = "Clip-On"
-
-    if not attrs.get("necklace_type") and ("necklace" in text_lower or "pendant" in text_lower):
-        if "pendant" in text_lower:
-            attrs["necklace_type"] = "Pendant"
-        elif "chain necklace" in text_lower:
-            attrs["necklace_type"] = "Chain"
-        elif "choker" in text_lower:
-            attrs["necklace_type"] = "Choker"
-        elif "lariat" in text_lower:
-            attrs["necklace_type"] = "Lariat"
-
-    if not attrs.get("bracelet_type") and ("bracelet" in text_lower or "bangle" in text_lower):
-        if "bangle" in text_lower:
-            attrs["bracelet_type"] = "Bangle"
-        elif "tennis bracelet" in text_lower:
-            attrs["bracelet_type"] = "Tennis"
-        elif "cuff" in text_lower:
-            attrs["bracelet_type"] = "Cuff"
+            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Huggies")
+        elif "chandelier" in text_lower:
+            attrs["earring_type"] = _normalize_to_bc365("earring_type", "chandelier")
 
     if not attrs.get("jewelry_shape") and "round" in text_lower:
-        attrs["jewelry_shape"] = "Round"
+        attrs["jewelry_shape"] = _normalize_to_bc365("jewelry_shape", "Round")
 
     return attrs
 
