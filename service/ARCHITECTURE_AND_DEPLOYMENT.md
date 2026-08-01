@@ -28,11 +28,16 @@ OS: Windows Server 2025
 Python: Python 3.11 (64-bit)
 Git: Installed and available in PATH
 Permissions: PowerShell run as Administrator
+
 4. Initial Deployment (First-Time Setup)
 These steps are only required the very first time you set up the server.
 
 4.1. Clone and Setup Environment
-cd C:\Deploygit clone https://github.com/maxvgvozdev/jewelry-attribute-recognition.gitcd jewelry-attribute-recognition\service# Create and activate virtual environmentpython -m venv .venv.\.venv\Scripts\activatepip install -r requirements.txt
+cd C:\Deploy git clone https://github.com/maxvgvozdev/jewelry-attribute-recognition.git 
+cd jewelry-attribute-recognition\service 
+# Create and activate virtual environment 
+python -m venv .venv.\.venv\Scripts\activatepip install -r requirements.txt
+
 4.2. Create Log Directory
 The Task Scheduler needs a directory to write application logs.
 
@@ -44,15 +49,15 @@ Run this block in an elevated PowerShell to register the API as a background tas
 
 powershell
 
-  $Action = New-ScheduledTaskAction -Execute "cmd.exe" `
+ $Action = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c .venv\Scripts\python.exe api.py >> logs\api.log 2>&1" `
-    -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition\"
+    -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition\service"
 
  $Trigger = New-ScheduledTaskTrigger -AtStartup
  $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
  $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -DontStopOnIdleEnd -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
-Register-ScheduledTask -TaskName "JamilyAgentAPI" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Jewelry Attribute Recognition API" -Force
+Register-ScheduledTask -TaskName "JewelryAgentAPI" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Jewelry Attribute Recognition API" -Force
 
 (Note: We use cmd.exe /c with >> to properly route Python's stdout and stderr into a persistent text file, as Task Scheduler does not natively capture console output).
 
@@ -109,6 +114,7 @@ powershell
 
 Stop-ScheduledTask -TaskName "JewelryAgentAPI" -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName "JewelryAgentAPI" -Confirm:$false
+
 7. Troubleshooting
 API returns 500 on /api/jewelry/recognize: Check logs/api.log. This is usually a network timeout to external sites (UPC database, Firecrawl) or a missing dependency in vision_client.py.
 Task State is "Ready" but API is unreachable: The Python process likely crashed on startup (e.g., port 8000 already in use, or syntax error in api.py). Check logs/api.log for the Python traceback.
