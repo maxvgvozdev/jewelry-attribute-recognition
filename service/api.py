@@ -590,7 +590,65 @@ def _build_attributes_from_text_and_vision(
                     # FORCE VISION AI RESULTS THROUGH STRICT VALIDATOR
                     attrs[key] = _normalize_to_bc365(key, str(value))
 
-    # 3. Text-based material overrides (Text is highly reliable for exact metal karats)
+    # 3. Text-based STONE extraction (Handling multiple stones like "Gold with Peridot and Diamonds")
+    mentioned_stones = []
+    
+    # Scan the text for ANY valid BC365 stone name
+    for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
+        # Skip generic words to avoid false positives
+        if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"):
+            continue
+        if stone.lower() in text_lower:
+            mentioned_stones.append(stone)
+
+    if mentioned_stones:
+        # Heuristic: "Gold with Peridot and Diamonds" -> First unique stone is Center, Diamonds are usually Side.
+        # Heuristic: "Diamond and Sapphire ring" -> Diamonds are Center, Sapphires are Side.
+        diamond_str = "Diamond"
+        first_stone = mentioned_stones[0]
+        
+        # Find the stone that appears FIRST in the text
+        first_stone_idx = len(text_lower)
+        for s in mentioned_stones:
+            idx = text_lower.find(s.lower())
+            if idx != -1 and idx < first_stone_idx:
+                first_stone_idx = idx
+                first_stone = s
+
+        if not attrs.get("center_stone_type"):
+            # If the text explicitly separates a unique stone from diamonds
+            if len(mentioned_stones) > 1 and diamond_str in mentioned_stones:
+                # "X with Diamonds" -> X is Center
+                if ("with diamond" in text_lower or "and diamond" in text_lower):
+                    for s in mentioned_stones:
+                        if s != diamond_str:
+                            attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s)
+                            break
+                else:
+                    attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
+            else:
+                # Only one stone found, or no diamonds
+                attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
+
+        # Assign the remaining stones to side stones
+        if not attrs.get("side_stone_1_type"):
+            for s in mentioned_stones:
+                if s != attrs.get("center_stone_type"):
+                    attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", s)
+                    break
+
+    # Text-based COLOR extraction based on extracted stones
+    if not attrs.get("stone_primary_color"):
+        if "peridot" in text_lower:
+            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
+        elif "ruby" in text_lower or "garnet" in text_lower:
+            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Red")
+        elif "sapphire" in text_lower:
+            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Blue")
+        elif "emerald" in text_lower:
+            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
+
+    # Text-based material overrides (Text is highly reliable for exact metal karats)
     if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
         attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold")
         attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
@@ -602,11 +660,7 @@ def _build_attributes_from_text_and_vision(
         attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
 
     if "platinum" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "Platinum") # Will return None as it's not in your Excel list
         attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
-
-    if "diamond" in text_lower and attrs.get("center_stone_type") is None:
-        attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", "Diamond")
 
     # -----------------------------------------------------------------------
     # 4. Text-based CATEGORIZATION fallbacks (Defense against Vision AI gaps)
