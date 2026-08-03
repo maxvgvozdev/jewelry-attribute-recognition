@@ -77,12 +77,17 @@ def main() -> None:
 
             for search_query in search_queries:
                 # CORRECTED V2 SCHEMA: Use "sources" array instead of "searchType"
+                # CORRECTED V2 SCHEMA: sources is an array of strings, NOT objects.
+                # Also using native 'includeDomains' instead of 'site:' query prepends.
                 search_payload = {
                     "query": search_query,
                     "limit": 10,
-                    "sources": [{"type": "web"}], 
                     "country": "US"
                 }
+
+                # If we know the official site, restrict the search natively
+                if official_domains:
+                    search_payload["includeDomains"] = official_domains
                 
                 search_resp = requests.post(f"{API_URL}/search", headers=headers, json=search_payload, timeout=60)
                 search_resp.raise_for_status()
