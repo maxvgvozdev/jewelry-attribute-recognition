@@ -68,32 +68,34 @@ def main() -> None:
                 break
 
         # -----------------------------------------------------------------
-        # STEP 1: FAST SEARCH (Using exact V2 API Schema)
+        # STEP 1: FAST SEARCH (Clean V2 Schema, no duplicate site: operators)
         # -----------------------------------------------------------------
         try:
-            search_queries = [query]
+            # We will try up to two searches:
+            # 1. Restricted to the official brand domain (if known)
+            # 2. General web search as a fallback
+            search_payloads = []
+
             if official_domains:
-                search_queries.insert(0, f"site:{official_domains[0]} {query}")
-
-            for search_query in search_queries:
-                # CORRECTED V2 SCHEMA: Use "sources" array instead of "searchType"
-                # CORRECTED V2 SCHEMA: sources is an array of strings, NOT objects.
-                # Also using native 'includeDomains' instead of 'site:' query prepends.
-                search_payload = {
-                    "query": search_query,
+                search_payloads.append({
+                    "query": query,
                     "limit": 10,
-                    "country": "US"
-                }
+                    "country": "US",
+                    "includeDomains": official_domains  # Firecrawl handles the site: operator internally!
+                })
+            
+            # Fallback: General search if domain-restricted search fails
+            search_payloads.append({
+                "query": query,
+                "limit": 10,
+                "country": "US"
+            })
 
-                # If we know the official site, restrict the search natively
-                if official_domains:
-                    search_payload["includeDomains"] = official_domains
-                
+            for search_payload in search_payloads:
                 search_resp = requests.post(f"{API_URL}/search", headers=headers, json=search_payload, timeout=60)
                 search_resp.raise_for_status()
                 search_data = search_resp.json()
                 
-                # V2 wraps results in the "web" array inside "data"
                 web_results = search_data.get("data", {}).get("web", [])
                 
                 # Filter out search/category/blog pages
@@ -137,11 +139,7 @@ def main() -> None:
         except Exception as e:
             print(json.dumps({"error": f"Unexpected error during search: {str(e)}"}))
             sys.exit(1)
-
-        if not product_page_url:
-            print(json.dumps({"data": []}))
-            return
-
+            
         # -----------------------------------------------------------------
         # STEP 2: DEEP SCRAPE (Now that we have the URL, scrape it with 
         # US/English locale forcing and Native Image extraction)
