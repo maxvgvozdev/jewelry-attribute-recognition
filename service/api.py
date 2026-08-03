@@ -192,7 +192,7 @@ def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
         return json.loads(result.stdout)
     except Exception as exc:
         raise RuntimeError(f"Scrape failed: {exc}")
-
+    
 def _check_upc(upc_code: str) -> Dict[str, Any]:
     """Check UPC on upcitemdb.com. Returns parsed metadata or empty dict."""
     if not upc_code:
@@ -816,7 +816,7 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
                     confidence_notes.append("Direct scrape fallback successfully extracted product images.")
         except Exception as exc:
             confidence_notes.append(f"Direct scrape fallback failed: {exc}")
-            
+
     # Get host for CDN preference logic
     try:
         from urllib.parse import urlparse

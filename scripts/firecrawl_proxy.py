@@ -93,8 +93,10 @@ def _do_scrape(url_to_scrape: str, headers: dict) -> dict:
         return {"url": url_to_scrape, "description": text_context, "images": clean_images}
 
     except Exception as e:
-        # On ANY error, return empty structure so api.py doesn't crash parsing JSON
-        return {"url": url_to_scrape, "description": "", "images": []}
+        import traceback
+        # Print the full error to stderr so api.py logs it, then exit with code 1
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:
@@ -177,7 +179,8 @@ def main() -> None:
                     break
 
         except Exception as e:
-            print(json.dumps({"error": f"Search failed: {str(e)}"}))
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             sys.exit(1)
 
         if not product_page_url:
