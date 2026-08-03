@@ -139,10 +139,9 @@ def main() -> None:
         except Exception as e:
             print(json.dumps({"error": f"Unexpected error during search: {str(e)}"}))
             sys.exit(1)
-            
+
         # -----------------------------------------------------------------
-        # STEP 2: DEEP SCRAPE (Now that we have the URL, scrape it with 
-        # US/English locale forcing and Native Image extraction)
+        # STEP 2: DEEP SCRAPE (Using 'product' format for perfect gallery images)
         # -----------------------------------------------------------------
         try:
             scrape_payload = {
@@ -161,14 +160,12 @@ def main() -> None:
                         }
                     },
                     {
-                        "type": "images" # Natively dumps DOM images into a clean array
+                        "type": "product" # MAGIC: Deterministically extracts only product variant images
                     }
                 ],
                 "onlyMainContent": False,
                 "waitFor": 5000,
                 "blockAds": True,
-                # MAGIC: Forces the headless browser to emulate a US user.
-                # This makes Cartier/boutiques serve the English page natively.
                 "location": {
                     "country": "US",
                     "languages": ["en-US"]
@@ -187,25 +184,18 @@ def main() -> None:
             text_parts = [p for p in [title, desc, materials] if p]
             text_context = "\n".join(text_parts)
             
-            # 2. Extract images natively (No regex, no og:image dependency)
+            # 2. Extract images cleanly from the 'product' variants array
             clean_images = []
-            raw_images = scrape_data.get("data", {}).get("images", [])
+            product_data = scrape_data.get("data", {}).get("product", {})
             
-            if isinstance(raw_images, list):
-                for img in raw_images:
-                    # Firecrawl 'images' format returns a list of strings
-                    img_url = img if isinstance(img, str) else img.get("url", "")
-                    
-                    if not img_url.startswith("http"):
-                        continue
-                    
-                    # Safety filter to skip data URIs or obvious tiny icons
-                    if any(skip in img_url.lower() for skip in ['data:image', 'favicon', 'sprite.svg']):
-                        continue
-                        
-                    clean_images.append(img_url)
+            if product_data and product_data.get("variants"):
+                for variant in product_data["variants"]:
+                    for img in variant.get("images", []):
+                        img_url = img.get("url", "") if isinstance(img, dict) else img
+                        if img_url.startswith("http"):
+                            clean_images.append(img_url)
 
-            # 3. Fallback to OG image if native DOM extraction yielded nothing
+            # 3. Fallback to OG image if the page wasn't a standard e-commerce setup
             if not clean_images:
                 og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
                 if og_image and og_image.startswith("http"):
@@ -225,6 +215,3 @@ def main() -> None:
             print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
         except Exception as e:
             print(json.dumps({"data": [{"url": product_page_url, "description": "", "images": []}]}))
-
-if __name__ == "__main__":
-    main()

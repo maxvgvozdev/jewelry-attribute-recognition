@@ -754,16 +754,29 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
 
     if not resolved_url:
-        if source_url:
-            resolved_url = source_url
+        # SMART FALLBACK: If Firecrawl search fails, construct the URL natively 
+        # for known luxury brands that have predictable URL structures.
+        brand_lower = brand.lower()
+        item_to_use = vendor_item_number or upc_code
+        
+        if brand_lower == 'cartier' and item_to_use:
+            resolved_url = f"https://www.cartier.com/en-us/jewelry/-/{item_to_use}.html"
+            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Cartier URL: {resolved_url}")
+        elif brand_lower == 'tiffany' and item_to_use:
+            resolved_url = f"https://www.tiffany.com/jewelry/-/{item_to_use}"
+            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Tiffany URL: {resolved_url}")
+        elif brand_lower == 'david yurman' and item_to_use:
+            # David Yurman often uses formats like R18647D88.html
+            resolved_url = f"https://www.davidyurman.com/-{item_to_use}.html"
+            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed DY URL: {resolved_url}")
         elif upc_code:
             resolved_url = f"https://www.upcitemdb.com/upc/{upc_code}"
+            confidence_notes.append(f"Firecrawl search failed. Falling back to UPC database.")
         else:
             raise HTTPException(
                 status_code=404, 
                 detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. "
-                       f"The partial SKU may not be indexed by search engines. "
-                       f"Please provide the exact 'source_url' parameter in the payload to bypass search."
+                       f"Please provide the exact 'source_url' parameter in the payload."
             )
 
     # Get host for CDN preference logic
