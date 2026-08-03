@@ -759,7 +759,12 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         elif upc_code:
             resolved_url = f"https://www.upcitemdb.com/upc/{upc_code}"
         else:
-            raise HTTPException(status_code=404, detail="No product pages available for the provided identifiers.")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. "
+                       f"The partial SKU may not be indexed by search engines. "
+                       f"Please provide the exact 'source_url' parameter in the payload to bypass search."
+            )
 
     # Get host for CDN preference logic
     try:
