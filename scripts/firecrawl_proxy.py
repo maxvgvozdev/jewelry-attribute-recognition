@@ -68,7 +68,7 @@ def main() -> None:
                 break
 
         # -----------------------------------------------------------------
-        # STEP 1: FAST SEARCH (Get URLs only, don't scrape yet to avoid bot blocks)
+        # STEP 1: FAST SEARCH (Using exact V2 API Schema)
         # -----------------------------------------------------------------
         try:
             search_queries = [query]
@@ -76,10 +76,11 @@ def main() -> None:
                 search_queries.insert(0, f"site:{official_domains[0]} {query}")
 
             for search_query in search_queries:
+                # CORRECTED V2 SCHEMA: Use "sources" array instead of "searchType"
                 search_payload = {
                     "query": search_query,
                     "limit": 10,
-                    "searchType": "Web",
+                    "sources": [{"type": "web"}], 
                     "country": "US"
                 }
                 
@@ -87,6 +88,7 @@ def main() -> None:
                 search_resp.raise_for_status()
                 search_data = search_resp.json()
                 
+                # V2 wraps results in the "web" array inside "data"
                 web_results = search_data.get("data", {}).get("web", [])
                 
                 # Filter out search/category/blog pages
