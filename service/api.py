@@ -607,25 +607,44 @@ def _build_attributes_from_text_and_vision(
                     # FORCE VISION AI RESULTS THROUGH STRICT VALIDATOR
                     attrs[key] = _normalize_to_bc365(key, str(value))
 
-    # 3. Text-based STONE extraction (Handling multiple stones like "Gold with Peridot and Diamonds")
+    # -----------------------------------------------------------------------
+    # 3. PRE-PROCESS: Normalize European Karats & Multilingual Terms
+    # -----------------------------------------------------------------------
+    if "750/1000" in text_lower or "750â/1000" in text_lower:
+        text_lower = text_lower.replace("750/1000", "18k").replace("750â/1000", "18k")
+    if "585/1000" in text_lower:
+        text_lower = text_lower.replace("585/1000", "14k")
+        
+    if "or rose" in text_lower or "oro rosa" in text_lower:
+        text_lower = text_lower.replace("or rose", "18k rose gold").replace("oro rosa", "18k rose gold")
+    if "or blanc" in text_lower or "oro bianco" in text_lower:
+        text_lower = text_lower.replace("or blanc", "18k white gold").replace("oro bianco", "18k white gold")
+    if "or jaune" in text_lower or "oro giallo" in text_lower:
+        text_lower = text_lower.replace("or jaune", "18k yellow gold").replace("oro giallo", "18k yellow gold")
+    if "platine" in text_lower or "platino" in text_lower:
+        text_lower = text_lower.replace("platine", "platinum").replace("platino", "platinum")
+        
+    if "diamant" in text_lower or "diamante" in text_lower:
+        text_lower = text_lower.replace("diamant", "diamond").replace("diamante", "diamond")
+    # Map "brilliant-cut" to "round" so shape extraction works
+    if "taille brillant" in text_lower or "brilliant-cut" in text_lower:
+        text_lower = text_lower.replace("taille brillant", "round").replace("brilliant-cut", "round")
+    if "taille baguette" in text_lower:
+        text_lower = text_lower.replace("taille baguette", "baguette")
+
+    # -----------------------------------------------------------------------
+    # 4. STONE EXTRACTION (Handling multiple stones like "Gold with Peridot and Diamonds")
+    # -----------------------------------------------------------------------
     mentioned_stones = []
-    
-    # Scan the text for ANY valid BC365 stone name
     for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
-        # Skip generic words to avoid false positives
         if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"):
             continue
         if stone.lower() in text_lower:
             mentioned_stones.append(stone)
 
     if mentioned_stones:
-        # Heuristic: "Gold with Peridot and Diamonds" -> First unique stone is Center, Diamonds are usually Side.
-        # Heuristic: "Diamond and Sapphire ring" -> Diamonds are Center, Sapphires are Side.
-        diamond_str = "Diamond"
-        first_stone = mentioned_stones[0]
-        
-        # Find the stone that appears FIRST in the text
         first_stone_idx = len(text_lower)
+        first_stone = mentioned_stones[0]
         for s in mentioned_stones:
             idx = text_lower.find(s.lower())
             if idx != -1 and idx < first_stone_idx:
@@ -633,28 +652,30 @@ def _build_attributes_from_text_and_vision(
                 first_stone = s
 
         if not attrs.get("center_stone_type"):
-            # If the text explicitly separates a unique stone from diamonds
-            if len(mentioned_stones) > 1 and diamond_str in mentioned_stones:
-                # "X with Diamonds" -> X is Center
-                if ("with diamond" in text_lower or "and diamond" in text_lower):
+            if len(mentioned_stones) > 1 and "Diamond" in mentioned_stones:
+                if "with diamond" in text_lower or "and diamond" in text_lower:
                     for s in mentioned_stones:
-                        if s != diamond_str:
+                        if s != "Diamond":
                             attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s)
                             break
                 else:
                     attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
             else:
-                # Only one stone found, or no diamonds
                 attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
 
-        # Assign the remaining stones to side stones
         if not attrs.get("side_stone_1_type"):
-            for s in mentioned_stones:
-                if s != attrs.get("center_stone_type"):
-                    attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", s)
-                    break
+            # FIX: If text says "paved with diamonds" or "halo of diamonds", assume side stone is Diamond
+            if ("paved" in text_lower or "pave" in text_lower or "halo" in text_lower) and attrs.get("center_stone_type") == "Diamond":
+                attrs["side_stone_1_type"] = "Diamond"
+            else:
+                for s in mentioned_stones:
+                    if s != attrs.get("center_stone_type"):
+                        attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", s)
+                        break
 
-    # Text-based COLOR extraction based on extracted stones
+    # -----------------------------------------------------------------------
+    # 5. COLOR & SHAPE EXTRACTION
+    # -----------------------------------------------------------------------
     if not attrs.get("stone_primary_color"):
         if "peridot" in text_lower:
             attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
@@ -664,53 +685,53 @@ def _build_attributes_from_text_and_vision(
             attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Blue")
         elif "emerald" in text_lower:
             attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
+        elif "diamond" in text_lower:
+            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "White")
 
-    # Text-based material overrides (Text is highly reliable for exact metal karats)
-    if "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold")
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
+    if not attrs.get("center_stone_shape") and "round" in text_lower:
+        attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round")
+
+    # -----------------------------------------------------------------------
+    # 6. MATERIAL & CATEGORY OVERRIDES
+    # -----------------------------------------------------------------------
+    if "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold")
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
     elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
         attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K White Gold")
         attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
-    elif "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold")
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
+    elif "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
+        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold")
+        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
 
     if "platinum" in text_lower:
         attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
 
-    # -----------------------------------------------------------------------
-    # 4. Text-based CATEGORIZATION fallbacks (Defense against Vision AI gaps)
-    # -----------------------------------------------------------------------
-    
     if not attrs.get("product_type"):
-        if "earring" in text_lower:
+        if "solitaire" in text_lower and "diamond" in text_lower:
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
+        elif "engagement" in text_lower:
+            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
+        elif "bague" in text_lower or "anello" in text_lower or "anillo" in text_lower:
+            if "wedding" not in text_lower and "engagement" not in text_lower:
+                attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
+        elif "earring" in text_lower:
             attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings")
         elif "necklace" in text_lower or "pendant" in text_lower:
             attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces")
         elif "bracelet" in text_lower or "bangle" in text_lower:
             attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets")
-        elif "engagement" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
         elif "wedding band" in text_lower:
             attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands")
         elif "ring" in text_lower:
             attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
 
-    if not attrs.get("earring_type") and "earring" in text_lower:
-        if "stud earring" in text_lower or "earring stud" in text_lower:
-            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Stud")
-        elif "drop earring" in text_lower or "dangle earring" in text_lower:
-            attrs["earring_type"] = _normalize_to_bc365("earring_type", "dangle")
-        elif "hoop earring" in text_lower:
-            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Hoops")
-        elif "huggie" in text_lower:
-            attrs["earring_type"] = _normalize_to_bc365("earring_type", "Huggies")
-        elif "chandelier" in text_lower:
-            attrs["earring_type"] = _normalize_to_bc365("earring_type", "chandelier")
-
-    if not attrs.get("jewelry_shape") and "round" in text_lower:
-        attrs["jewelry_shape"] = _normalize_to_bc365("jewelry_shape", "Round")
+    if not attrs.get("engagement_ring_type") and "solitaire" in text_lower:
+        attrs["engagement_ring_type"] = _normalize_to_bc365("engagement_ring_type", "Solitaire")
+        
+    if "pavé" in text_lower or "pave" in text_lower or "paved" in text_lower:
+        if not attrs.get("wedding_band_setting_type"):
+            attrs["wedding_band_setting_type"] = _normalize_to_bc365("wedding_band_setting_type", "Pave")
 
     return attrs
 
