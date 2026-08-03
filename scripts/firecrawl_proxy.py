@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-API_URL = "https://api.firecrawl.com/v2"
+API_URL = "https://api.firecrawl.dev/v2"
 
 # Map of brand keywords to their official website domains
 OFFICIAL_SITES = {
