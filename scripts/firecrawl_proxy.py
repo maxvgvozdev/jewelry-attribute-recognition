@@ -139,6 +139,63 @@ def main() -> None:
         except Exception as e:
             print(json.dumps({"error": f"Unexpected error during search: {str(e)}"}))
             sys.exit(1)
+    # -----------------------------------------------------------------
+    # NEW: DIRECT SCRAPE COMMAND
+    # -----------------------------------------------------------------
+    elif command == "scrape":
+        url_to_scrape = sys.argv[2]
+        try:
+            scrape_payload = {
+                "url": url_to_scrape,
+                "formats": [
+                    {
+                        "type": "json",
+                        "prompt": TEXT_EXTRACTION_PROMPT,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "product_title": {"type": ["string", "null"]},
+                                "description": {"type": ["string", "null"]},
+                                "materials_text": {"type": ["string", "null"]}
+                            }
+                        }
+                    },
+                    {"type": "product"} # Extract clean gallery images
+                ],
+                "onlyMainContent": False,
+                "waitFor": 5000,
+                "blockAds": True,
+                "location": {"country": "US", "languages": ["en-US"]}
+            }
+            
+            scrape_resp = requests.post(f"{API_URL}/scrape", headers=headers, json=scrape_payload, timeout=120)
+            scrape_resp.raise_for_status()
+            scrape_data = scrape_resp.json()
+            
+            extracted_data = scrape_data.get("data", {}).get("json", {})
+            text_parts = [p for p in [extracted_data.get("product_title", ""), extracted_data.get("description", ""), extracted_data.get("materials_text", "")] if p]
+            text_context = "\n".join(text_parts)
+            
+            clean_images = []
+            product_data = scrape_data.get("data", {}).get("product", {})
+            if product_data and product_data.get("variants"):
+                for variant in product_data["variants"]:
+                    for img in variant.get("images", []):
+                        img_url = img.get("url", "") if isinstance(img, dict) else img
+                        if img_url.startswith("http"):
+                            clean_images.append(img_url)
+
+            if not clean_images:
+                og_image = scrape_data.get("data", {}).get("metadata", {}).get("og:image", "")
+                if og_image and og_image.startswith("http"):
+                    clean_images.append(og_image)
+
+            print(json.dumps({"data": [{"url": url_to_scrape, "description": text_context, "images": clean_images}]}))
+
+        except Exception as e:
+            # If direct scrape fails, return empty so api.py can handle it gracefully
+            print(json.dumps({"data": [{"url": url_to_scrape, "description": "", "images": []}]}))
+
 
         # -----------------------------------------------------------------
         # STEP 2: DEEP SCRAPE (Using 'product' format for perfect gallery images)

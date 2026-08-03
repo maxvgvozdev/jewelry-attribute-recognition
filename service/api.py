@@ -175,6 +175,23 @@ def _run_firecrawl_search(query: str) -> Dict[str, Any]:
         logger.exception("Firecrawl search error")
         raise RuntimeError(f"Search failed: {exc}")
 
+def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
+    """Directly scrape a URL using the Firecrawl proxy script."""
+    if not FIRECRAWL_SCRIPT.exists():
+        raise RuntimeError(f"Firecrawl proxy script not found: {FIRECRAWL_SCRIPT}")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(FIRECRAWL_SCRIPT), "scrape", url],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Firecrawl scrape failed: {result.stderr}")
+        return json.loads(result.stdout)
+    except Exception as exc:
+        raise RuntimeError(f"Scrape failed: {exc}")
 
 def _check_upc(upc_code: str) -> Dict[str, Any]:
     """Check UPC on upcitemdb.com. Returns parsed metadata or empty dict."""
@@ -778,7 +795,28 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
                 detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. "
                        f"Please provide the exact 'source_url' parameter in the payload."
             )
-
+    # -----------------------------------------------------------------------
+    # SCRAPE FALLBACK: If we have a URL but NO images (e.g., Smart Fallback triggered),
+    # we must explicitly scrape the URL to get text and images.
+    # -----------------------------------------------------------------------
+    if not image_urls and resolved_url:
+        try:
+            confidence_notes.append(f"Search yielded no images. Attempting direct scrape of: {resolved_url}")
+            scrape_result = _run_firecrawl_scrape(resolved_url)
+            scrape_items = scrape_result.get("data", [])
+            
+            if scrape_items:
+                # Update text if the search didn't find any
+                if not page_text:
+                    page_text = scrape_items[0].get("description", "") or ""
+                
+                # Grab the images
+                image_urls = scrape_items[0].get("images", [])
+                if image_urls:
+                    confidence_notes.append("Direct scrape fallback successfully extracted product images.")
+        except Exception as exc:
+            confidence_notes.append(f"Direct scrape fallback failed: {exc}")
+            
     # Get host for CDN preference logic
     try:
         from urllib.parse import urlparse
