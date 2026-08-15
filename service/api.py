@@ -37,21 +37,6 @@ from config import VISION_EXTRACTION_PROMPT
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 
-# --- NEW MODELS FOR INVOICE PARSING ---
-
-class InvoiceItem(BaseModel):
-    vendor_item_number: str = ""
-    quantity: Optional[float] = None
-    price: Optional[float] = None
-    description: str = ""
-    brand: str = ""
-    attributes: Optional[JewelryAttributes] = None
-
-class InvoiceResponse(BaseModel):
-    vendor_name: str = ""
-    vendor_invoice_no: str = ""
-    vendor_invoice_date: str = ""
-    items: List[InvoiceItem] = []
 
 # --- UPGRADE EXISTING MODEL ---
 
@@ -167,6 +152,21 @@ class JewelryAttributes(BaseModel):
     clasp_type: Optional[str]
     earring_back: Optional[str]
 
+# --- NEW MODELS FOR INVOICE PARSING ---
+
+class InvoiceItem(BaseModel):
+    vendor_item_number: str = ""
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    description: str = ""
+    brand: str = ""
+    attributes: Optional[JewelryAttributes] = None
+
+class InvoiceResponse(BaseModel):
+    vendor_name: str = ""
+    vendor_invoice_no: str = ""
+    vendor_invoice_date: str = ""
+    items: List[InvoiceItem] = []
 
 class JewelryResponse(BaseModel):
     item: Dict[str, Any]
