@@ -896,8 +896,6 @@ async def recognize(req: JewelryRequest):
         logger.exception("Workflow failed")
         raise HTTPException(status_code=500, detail=f"Internal error: {exc}")
 
-import fitz  # PyMuPDF
-
 # ---------------------------------------------------------------------------
 # Invoice Prompt (For local LLM text extraction)
 # ---------------------------------------------------------------------------
@@ -941,17 +939,15 @@ Return ONLY valid JSON matching this structure:
   ]
 }"""
 
+from pdfminer.high_level import extract_text
+
 def _extract_text_from_pdf(file_path: str) -> str:
-    """Extracts all text from a digital PDF."""
-    text = ""
+    """Extracts all text from a digital PDF using pure Python."""
     try:
-        with fitz.open(file_path) as doc:
-            for page in doc:
-                text += page.get_text()
+        return extract_text(file_path)
     except Exception as e:
         logger.error(f"PDF text extraction failed: {e}")
         raise RuntimeError(f"Failed to read PDF: {e}")
-    return text
 
 def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
     """Sends text to local Ollama for structured extraction."""
