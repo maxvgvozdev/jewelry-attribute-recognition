@@ -34,6 +34,34 @@ except Exception:
 # Strict schema prompt for Vision AI to extract all 31 BC365 fields
 from config import VISION_EXTRACTION_PROMPT
 
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi.responses import JSONResponse
+
+# --- NEW MODELS FOR INVOICE PARSING ---
+
+class InvoiceItem(BaseModel):
+    vendor_item_number: str = ""
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    description: str = ""
+    brand: str = ""
+    attributes: Optional[JewelryAttributes] = None
+
+class InvoiceResponse(BaseModel):
+    vendor_name: str = ""
+    vendor_invoice_no: str = ""
+    vendor_invoice_date: str = ""
+    items: List[InvoiceItem] = []
+
+# --- UPGRADE EXISTING MODEL ---
+
+class JewelryRequest(BaseModel):
+    brand: str = Field(..., json_schema_extra={"examples": ["David Yurman"]})
+    vendor_item_number: str = ""
+    upc_code: str = ""
+    source_url: str = ""
+    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice text to prevent Vision AI from overwriting them")
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -576,6 +604,7 @@ def _build_attributes_from_text_and_vision(
     text: str,
     vision_results: List[Dict[str, Any]],
     item_number: str,
+    pre_filled_attrs: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     text_lower = (text or "").lower()
     
@@ -593,18 +622,25 @@ def _build_attributes_from_text_and_vision(
         "chain_type": None, "clasp_type": None, "earring_back": None,
     }
 
+    # =========================================================================
+    # STEP 0 (NEW): PRE-FILL FROM INVOICE
+    # If BC sent us data from the PDF, we lock it in immediately.
+    # =========================================================================
+    if pre_filled_attrs and isinstance(pre_filled_attrs, dict):
+        for key, value in pre_filled_attrs.items():
+            if key in attrs and value is not None:
+                attrs[key] = _normalize_to_bc365(key, str(value))
+
     # 2. Try to parse the JSON returned by the Vision AI
     for v_res in vision_results:
         analysis_text = v_res.get("analysis", "")
         if not analysis_text:
             continue
-            
         vision_attrs = _extract_json_from_text(analysis_text)
-        
         if vision_attrs and isinstance(vision_attrs, dict):
             for key, value in vision_attrs.items():
-                if key in attrs and value is not None:
-                    # FORCE VISION AI RESULTS THROUGH STRICT VALIDATOR
+                # CHANGED: Only update if the invoice DID NOT already provide it
+                if key in attrs and attrs[key] is None and value is not None:
                     attrs[key] = _normalize_to_bc365(key, str(value))
 
     # -----------------------------------------------------------------------
@@ -614,7 +650,6 @@ def _build_attributes_from_text_and_vision(
         text_lower = text_lower.replace("750/1000", "18k").replace("750â/1000", "18k")
     if "585/1000" in text_lower:
         text_lower = text_lower.replace("585/1000", "14k")
-        
     if "or rose" in text_lower or "oro rosa" in text_lower:
         text_lower = text_lower.replace("or rose", "18k rose gold").replace("oro rosa", "18k rose gold")
     if "or blanc" in text_lower or "oro bianco" in text_lower:
@@ -623,115 +658,81 @@ def _build_attributes_from_text_and_vision(
         text_lower = text_lower.replace("or jaune", "18k yellow gold").replace("oro giallo", "18k yellow gold")
     if "platine" in text_lower or "platino" in text_lower:
         text_lower = text_lower.replace("platine", "platinum").replace("platino", "platinum")
-        
     if "diamant" in text_lower or "diamante" in text_lower:
         text_lower = text_lower.replace("diamant", "diamond").replace("diamante", "diamond")
-    # Map "brilliant-cut" to "round" so shape extraction works
     if "taille brillant" in text_lower or "brilliant-cut" in text_lower:
         text_lower = text_lower.replace("taille brillant", "round").replace("brilliant-cut", "round")
     if "taille baguette" in text_lower:
         text_lower = text_lower.replace("taille baguette", "baguette")
 
     # -----------------------------------------------------------------------
-    # 4. STONE EXTRACTION (Handling multiple stones like "Gold with Peridot and Diamonds")
+    # 4. STONE EXTRACTION
     # -----------------------------------------------------------------------
-    mentioned_stones = []
-    for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
-        if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"):
-            continue
-        if stone.lower() in text_lower:
-            mentioned_stones.append(stone)
+    if attrs.get("center_stone_type") is None: # CHANGED: Only run if invoice didn't provide it
+        mentioned_stones = []
+        for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
+            if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"): continue
+            if stone.lower() in text_lower: mentioned_stones.append(stone)
 
-    if mentioned_stones:
-        first_stone_idx = len(text_lower)
-        first_stone = mentioned_stones[0]
-        for s in mentioned_stones:
-            idx = text_lower.find(s.lower())
-            if idx != -1 and idx < first_stone_idx:
-                first_stone_idx = idx
-                first_stone = s
-
-        if not attrs.get("center_stone_type"):
+        if mentioned_stones:
+            first_stone_idx = len(text_lower)
+            first_stone = mentioned_stones[0]
+            for s in mentioned_stones:
+                idx = text_lower.find(s.lower())
+                if idx != -1 and idx < first_stone_idx:
+                    first_stone_idx = idx
+                    first_stone = s
             if len(mentioned_stones) > 1 and "Diamond" in mentioned_stones:
                 if "with diamond" in text_lower or "and diamond" in text_lower:
                     for s in mentioned_stones:
-                        if s != "Diamond":
-                            attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s)
-                            break
-                else:
-                    attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
-            else:
-                attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
+                        if s != "Diamond": attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s); break
+                else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
+            else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
 
-        if not attrs.get("side_stone_1_type"):
-            # FIX: If text says "paved with diamonds" or "halo of diamonds", assume side stone is Diamond
-            if ("paved" in text_lower or "pave" in text_lower or "halo" in text_lower) and attrs.get("center_stone_type") == "Diamond":
-                attrs["side_stone_1_type"] = "Diamond"
-            else:
-                for s in mentioned_stones:
-                    if s != attrs.get("center_stone_type"):
-                        attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", s)
-                        break
+    if attrs.get("side_stone_1_type") is None: # CHANGED
+        if ("paved" in text_lower or "pave" in text_lower or "halo" in text_lower) and attrs.get("center_stone_type") == "Diamond":
+            attrs["side_stone_1_type"] = "Diamond"
+        else:
+            for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
+                if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"): continue
+                if stone.lower() in text_lower and stone != attrs.get("center_stone_type"):
+                    attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", stone); break
 
     # -----------------------------------------------------------------------
     # 5. COLOR & SHAPE EXTRACTION
     # -----------------------------------------------------------------------
-    if not attrs.get("stone_primary_color"):
-        if "peridot" in text_lower:
-            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
-        elif "ruby" in text_lower or "garnet" in text_lower:
-            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Red")
-        elif "sapphire" in text_lower:
-            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Blue")
-        elif "emerald" in text_lower:
-            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "Green")
-        elif "diamond" in text_lower:
-            attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "White")
-
-    if not attrs.get("center_stone_shape") and "round" in text_lower:
+    if attrs.get("stone_primary_color") is None and "diamond" in text_lower: # CHANGED
+        attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "White")
+    if attrs.get("center_stone_shape") is None and "round" in text_lower: # CHANGED
         attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round")
 
     # -----------------------------------------------------------------------
     # 6. MATERIAL & CATEGORY OVERRIDES
     # -----------------------------------------------------------------------
-    if "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold")
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
-    elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K White Gold")
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
-    elif "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
-        attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold")
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
+    if attrs.get("metal_type") is None: # CHANGED
+        if "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
+            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
+        elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
+            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K White Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
+        elif "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
+            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
+        elif "platinum" in text_lower:
+            attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
 
-    if "platinum" in text_lower:
-        attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
+    if attrs.get("product_type") is None: # CHANGED
+        if "solitaire" in text_lower and "diamond" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
+        elif "engagement" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
+        elif "earring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings")
+        elif "necklace" in text_lower or "pendant" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces")
+        elif "bracelet" in text_lower or "bangle" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets")
+        elif "wedding band" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands")
+        elif "ring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
 
-    if not attrs.get("product_type"):
-        if "solitaire" in text_lower and "diamond" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
-        elif "engagement" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
-        elif "bague" in text_lower or "anello" in text_lower or "anillo" in text_lower:
-            if "wedding" not in text_lower and "engagement" not in text_lower:
-                attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
-        elif "earring" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings")
-        elif "necklace" in text_lower or "pendant" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces")
-        elif "bracelet" in text_lower or "bangle" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets")
-        elif "wedding band" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands")
-        elif "ring" in text_lower:
-            attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
-
-    if not attrs.get("engagement_ring_type") and "solitaire" in text_lower:
+    if attrs.get("engagement_ring_type") is None and "solitaire" in text_lower: # CHANGED
         attrs["engagement_ring_type"] = _normalize_to_bc365("engagement_ring_type", "Solitaire")
         
-    if "pavé" in text_lower or "pave" in text_lower or "paved" in text_lower:
-        if not attrs.get("wedding_band_setting_type"):
-            attrs["wedding_band_setting_type"] = _normalize_to_bc365("wedding_band_setting_type", "Pave")
+    if attrs.get("wedding_band_setting_type") is None and ("pavé" in text_lower or "pave" in text_lower or "paved" in text_lower): # CHANGED
+        attrs["wedding_band_setting_type"] = _normalize_to_bc365("wedding_band_setting_type", "Pave")
 
     return attrs
 
@@ -740,7 +741,7 @@ def _build_attributes_from_text_and_vision(
 # Workflow orchestration
 # ---------------------------------------------------------------------------
 
-def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
+def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     brand = payload.brand.strip()
     vendor_item_number = payload.vendor_item_number.strip()
     upc_code = payload.upc_code.strip()
@@ -792,11 +793,8 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
         confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
 
     if not resolved_url:
-        # SMART FALLBACK: If Firecrawl search fails, construct the URL natively 
-        # for known luxury brands that have predictable URL structures.
         brand_lower = brand.lower()
         item_to_use = vendor_item_number or upc_code
-        
         if brand_lower == 'cartier' and item_to_use:
             resolved_url = f"https://www.cartier.com/en-us/jewelry/-/{item_to_use}.html"
             confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Cartier URL: {resolved_url}")
@@ -804,41 +802,28 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             resolved_url = f"https://www.tiffany.com/jewelry/-/{item_to_use}"
             confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Tiffany URL: {resolved_url}")
         elif brand_lower == 'david yurman' and item_to_use:
-            # David Yurman often uses formats like R18647D88.html
             resolved_url = f"https://www.davidyurman.com/-{item_to_use}.html"
             confidence_notes.append(f"Firecrawl search failed. Dynamically constructed DY URL: {resolved_url}")
         elif upc_code:
             resolved_url = f"https://www.upcitemdb.com/upc/{upc_code}"
             confidence_notes.append(f"Firecrawl search failed. Falling back to UPC database.")
         else:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. "
-                       f"Please provide the exact 'source_url' parameter in the payload."
-            )
-    # -----------------------------------------------------------------------
-    # SCRAPE FALLBACK: If we have a URL but NO images (e.g., Smart Fallback triggered),
-    # we must explicitly scrape the URL to get text and images.
-    # -----------------------------------------------------------------------
+            raise HTTPException(status_code=404, detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. Please provide the exact 'source_url' parameter in the payload.")
+
     if not image_urls and resolved_url:
         try:
             confidence_notes.append(f"Search yielded no images. Attempting direct scrape of: {resolved_url}")
             scrape_result = _run_firecrawl_scrape(resolved_url)
             scrape_items = scrape_result.get("data", [])
-            
             if scrape_items:
-                # Update text if the search didn't find any
                 if not page_text:
                     page_text = scrape_items[0].get("description", "") or ""
-                
-                # Grab the images
                 image_urls = scrape_items[0].get("images", [])
                 if image_urls:
                     confidence_notes.append("Direct scrape fallback successfully extracted product images.")
         except Exception as exc:
             confidence_notes.append(f"Direct scrape fallback failed: {exc}")
 
-    # Get host for CDN preference logic
     try:
         from urllib.parse import urlparse
         parsed = urlparse(resolved_url)
@@ -862,7 +847,11 @@ def run_jewelry_workflow(payload: JewelryRequest) -> Dict[str, Any]:
             confidence_notes.append(error_msg)
 
     combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
-    attrs_dict = _build_attributes_from_text_and_vision(brand, combined_text, vision_results, item_number or upc_code)
+    
+    # THIS IS THE KEY CHANGE: We pass the pre_filled_attrs down to the builder
+    attrs_dict = _build_attributes_from_text_and_vision(
+        brand, combined_text, vision_results, item_number or upc_code, pre_filled_attrs
+    )
 
     return {
         "item": {"brand": brand, "vendor_item_number": vendor_item_number, "upc_code": upc_code, "source_url": source_url, "resolved_item_url": resolved_url},
@@ -896,16 +885,122 @@ async def health():
 
 @app.post("/api/jewelry/recognize", response_model=JewelryResponse)
 async def recognize(req: JewelryRequest):
-    logger.info("Received jewelry request: brand=%s, vendor=%s, upc=%s", req.brand, req.vendor_item_number, req.upc_code)
+    logger.info("Received jewelry request: brand=%s, vendor=%s", req.brand, req.vendor_item_number)
     try:
-        result = run_jewelry_workflow(req)
-        return result  # FastAPI validates against JewelryResponse automatically
+        # We now pass the pre_filled_attributes from the request down to the workflow
+        result = run_jewelry_workflow(req, req.pre_filled_attributes)
+        return JSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Workflow failed")
         raise HTTPException(status_code=500, detail=f"Internal error: {exc}")
 
+import fitz  # PyMuPDF
+
+# ---------------------------------------------------------------------------
+# Invoice Prompt (For local LLM text extraction)
+# ---------------------------------------------------------------------------
+INVOICE_EXTRACTION_PROMPT = """You are an expert data entry clerk for a jewelry company. Analyze this invoice text and extract the data into a JSON object.
+
+RULES:
+1. Find the Vendor Name, Invoice Number, and Invoice Date.
+2. Find the line items. For EACH line item, extract:
+   - vendor_item_number (the SKU or style number)
+   - quantity (number)
+   - price (number, float)
+   - description (the exact text describing the item)
+   - brand (infer from context if not explicitly stated)
+   - attributes: Based ONLY on the item description text, extract jewelry attributes into this exact schema. If a value is not in the text, use null. Do not guess visual traits.
+   
+Return ONLY valid JSON matching this structure:
+{
+  "vendor_name": "",
+  "vendor_invoice_no": "",
+  "vendor_invoice_date": "",
+  "items": [
+    {
+      "vendor_item_number": "",
+      "quantity": 1.0,
+      "price": 0.0,
+      "description": "",
+      "brand": "",
+      "attributes": {
+        "metal_type": null, "metal_color": null, "stone_primary_color": null,
+        "product_type": null, "gender": null, "center_stone_type": null,
+        "center_stone_shape": null, "side_stone_1_type": null, "side_stone_1_shape": null,
+        "side_stone_2_type": null, "side_stone_2_shape": null, "engagement_set_type": null,
+        "engagement_ring_type": null, "wedding_band_type": null, "wedding_band_setting_type": null,
+        "wedding_band_stone_continuity": null, "fashion_ring_type": null, "earring_type": null,
+        "necklace_type": null, "bracelet_type": null, "accessory_type": null,
+        "theme": null, "occasion": null, "jewelry_shape": null, "motif": null,
+        "finishing_type": null, "estate_period": null, "holiday_code": null,
+        "chain_type": null, "clasp_type": null, "earring_back": null
+      }
+    }
+  ]
+}"""
+
+def _extract_text_from_pdf(file_path: str) -> str:
+    """Extracts all text from a digital PDF."""
+    text = ""
+    try:
+        with fitz.open(file_path) as doc:
+            for page in doc:
+                text += page.get_text()
+    except Exception as e:
+        logger.error(f"PDF text extraction failed: {e}")
+        raise RuntimeError(f"Failed to read PDF: {e}")
+    return text
+
+def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
+    """Sends text to local Ollama for structured extraction."""
+    from service.vision_client import VISION_API_URL, VISION_MODEL
+    
+    payload = {
+        "model": VISION_MODEL, # Reusing the same Ollama instance for text
+        "prompt": f"{prompt}\n\nINVOICE TEXT:\n{text}",
+        "stream": False,
+        "options": {"temperature": 0.1} # Low temp for strict extraction
+    }
+    
+    resp = requests.post(f"{VISION_API_URL}/api/generate", json=payload, timeout=120)
+    resp.raise_for_status()
+    raw = resp.json().get("response", "")
+    return _extract_json_from_text(raw) or {}
+
+
+@app.post("/api/invoice/parse", response_model=InvoiceResponse)
+async def parse_invoice(file: UploadFile = File(...)):
+    """
+    Step 1: BC uploads a vendor invoice PDF. 
+    Service extracts text and uses local AI to structure it.
+    """
+    logger.info(f"Received invoice PDF: {file.filename}")
+    
+    # 1. Save uploaded file temporarily
+    temp_pdf = ARTIFACTS_DIR / f"inv_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.pdf"
+    with open(temp_pdf, "wb") as f:
+        f.write(await file.read())
+        
+    # 2. Extract text
+    pdf_text = _extract_text_from_pdf(str(temp_pdf))
+    if not pdf_text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from PDF. Is it a scanned image?")
+        
+    # 3. Send to Local LLM
+    try:
+        llm_result = _ask_local_llm(INVOICE_EXTRACTION_PROMPT, pdf_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Local LLM failed to parse invoice: {e}")
+
+    # 4. Format and return
+    return InvoiceResponse(
+        vendor_name=llm_result.get("vendor_name", ""),
+        vendor_invoice_no=llm_result.get("vendor_invoice_no", ""),
+        vendor_invoice_date=llm_result.get("vendor_invoice_date", ""),
+        items=llm_result.get("items", [])
+    )
 
 # ---------------------------------------------------------------------------
 # Windows Service wrapper
