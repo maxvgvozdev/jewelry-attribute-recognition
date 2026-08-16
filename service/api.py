@@ -953,19 +953,17 @@ def _extract_text_from_pdf(file_path: str) -> str:
     except Exception as e:
         logger.warning(f"Pdfminer failed: {e}")
 
-    # Step 2: FALLBACK - Use Vision AI, but with extreme memory safety
-    logger.info("PDF has no digital text. Falling back to compressed Vision AI OCR...")
+    # Step 2: FALLBACK - Use Vision AI, but with extreme safety
+    logger.info("PDF has no digital text. Falling back to Vision AI OCR...")
     try:
         import fitz
         import base64
         
-        # CRITICAL: Render at very low DPI (72) and convert to JPEG to save massive amounts of RAM
         doc = fitz.open(file_path)
         page = doc.load_page(0)
-        # Use a tiny matrix to prevent OOM on the Ollama server
-        mat = fitz.Matrix(fitz.ColorSpace(sRGB, fitz.Resolution(72))
-        pix = page.get_pixmap(matrix=mat)
-        img_bytes = pix.tobytes("jpeg", quality=50) # 50% JPEG quality drastically shrinks the base64 string
+        # SIMPLEST rendering possible to prevent crashes
+        pix = page.get_pixmap(dpi=72) 
+        img_bytes = pix.tobytes("png") # Use PNG to avoid compression overhead
         doc.close()
         
         b64_image = base64.b64encode(img_bytes).decode("utf-8")
@@ -974,7 +972,7 @@ def _extract_text_from_pdf(file_path: str) -> str:
         
         from service.vision_client import VISION_API_URL, VISION_MODEL
         
-        # Send with a strict 60-second timeout to prevent hanging
+        # Send with a strict timeout
         resp = requests.post(
             f"{VISION_API_URL}/api/generate", 
             json={"model": VISION_MODEL, "prompt": ocr_prompt, "images": [b64_image], "stream": False, "options": {"temperature": 0.1}}, 
