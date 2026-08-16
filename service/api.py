@@ -942,12 +942,70 @@ Return ONLY valid JSON matching this structure:
 from pdfminer.high_level import extract_text
 
 def _extract_text_from_pdf(file_path: str) -> str:
-    """Extracts all text from a digital PDF using pure Python."""
+    """Extracts text from a digital PDF. Falls back to Vision AI if text is empty (scanned image)."""
+    
+    # Step 1: Try standard text extraction (fast, pure Python)
     try:
-        return extract_text(file_path)
+        from pdfminer.high_level import extract_text
+        text = extract_text(file_path)
+        # If we got a decent amount of text, return it
+        if len(text.strip()) > 50:
+            return text
     except Exception as e:
-        logger.error(f"PDF text extraction failed: {e}")
-        raise RuntimeError(f"Failed to read PDF: {e}")
+        logger.warning(f"Pdfminer failed: {e}")
+
+    # Step 2: FALLBACK - It's likely a scanned image PDF. Use Vision AI to read it.
+    logger.info("PDF text extraction yielded empty/scant results. Falling back to Vision AI OCR...")
+    try:
+        # Delayed import so the server doesn't crash on startup if PyMuPDF DLLs are missing
+        import fitz  
+        import base64
+        from io import BytesIO
+        
+        # Render the first page of the PDF to a PNG image in memory
+        doc = fitz.open(file_path)
+        page = doc.load_page(0)
+        pix = page.get_pixmap(dpi=200) # 200 DPI is good for OCR
+        img_bytes = pix.tobytes("png")
+        doc.close()
+        
+        b64_image = base64.b64encode(img_bytes).decode("utf-8")
+        
+        # Ask the local LLM to read the image like a human would
+        ocr_prompt = """You are an expert data entry clerk. This is an image of a vendor invoice. 
+Extract ALL text you can see exactly as written, including item numbers, descriptions, quantities, prices, vendor details, etc.
+Do not format as JSON, just return the raw text line by line."""
+        
+        from service.vision_client import VISION_API_URL, VISION_MODEL
+        payload = {
+            "model": VISION_MODEL,
+            "prompt": ocr_prompt,
+            "images": [b64_image],
+            "stream": False,
+            "options": {"temperature": 0.1}
+        }
+        
+        resp = requests.post(f"{VISION_API_URL}/api/generate", json=payload, timeout=120)
+        resp.raise_for_status()
+        ocr_text = resp.json().get("response", "")
+        
+        if len(ocr_text.strip()) > 20:
+            logger.info("Vision AI successfully read the scanned PDF.")
+            return ocr_text
+            
+        raise RuntimeError("Failed to extract text. The PDF might be blank or corrupted.")
+        
+    except ImportError:
+        raise HTTPException(
+            status_code=400, 
+            detail="This PDF contains no digital text (it's a scanned image) and the PyMuPDF library is missing on the server. Please install it via: pip install PyMuPDF"
+        )
+    except Exception as e:
+        logger.exception("Vision AI PDF fallback failed")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Could not extract text from PDF. Vision AI fallback failed: {str(e)}"
+        )
 
 def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
     """Sends text to local Ollama for structured extraction."""
