@@ -942,58 +942,21 @@ Return ONLY valid JSON matching this structure:
 from pdfminer.high_level import extract_text
 
 def _extract_text_from_pdf(file_path: str) -> str:
-    """Extracts text from a digital PDF. Falls back to compressed Vision AI OCR if text is empty."""
-    
-    # Step 1: Try standard text extraction (fast, pure Python)
+    """Extracts text from a digital PDF. Returns empty string if the PDF is a scanned image."""
     try:
         from pdfminer.high_level import extract_text
         text = extract_text(file_path)
         if len(text.strip()) > 50:
             return text
     except Exception as e:
-        logger.warning(f"Pdfminer failed: {e}")
-
-    # Step 2: FALLBACK - Use Vision AI, but with extreme safety
-    logger.info("PDF has no digital text. Falling back to Vision AI OCR...")
-    try:
-        import fitz
-        import base64
-        
-        doc = fitz.open(file_path)
-        page = doc.load_page(0)
-        # SIMPLEST rendering possible to prevent crashes
-        pix = page.get_pixmap(dpi=72) 
-        img_bytes = pix.tobytes("png") # Use PNG to avoid compression overhead
-        doc.close()
-        
-        b64_image = base64.b64encode(img_bytes).decode("utf-8")
-        
-        ocr_prompt = """You are a data extraction AI. Look at this invoice image. Find the table containing item descriptions, SKUs, quantities, and prices. Return ONLY a summary of the items in exactly this JSON format, do not include any other text: [{"sku": "", "description": "", "qty": 0, "price": 0}] Do NOT transcribe the entire page. Just extract the jewelry item rows."""
-        
-        from service.vision_client import VISION_API_URL, VISION_MODEL
-        
-        # Send with a strict timeout
-        resp = requests.post(
-            f"{VISION_API_URL}/api/generate", 
-            json={"model": VISION_MODEL, "prompt": ocr_prompt, "images": [b64_image], "stream": False, "options": {"temperature": 0.1}}, 
-            timeout=180 
-        )
-        resp.raise_for_status()
-        ocr_text = resp.json().get("response", "")
-        
-        if len(ocr_text.strip()) > 20:
-            logger.info("Vision AI successfully read the scanned PDF.")
-            return ocr_text
-            
-        return ""
-            
-    except ImportError:
-        raise HTTPException(status_code=400, detail="This PDF contains no digital text and PyMuPDF is missing on the server.")
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=400, detail="The Vision AI timed out trying to read the PDF image.")
-    except Exception as e:
-        logger.exception("Vision AI PDF fallback failed")
-        raise HTTPException(status_code=400, detail=f"Failed to extract text from scanned PDF: {str(e)}")
+        logger.warning(f"Pdfminer text extraction failed: {e}")
+    
+    # If we get here, the PDF is a scanned image. We cannot do OCR here.
+    logger.error("PDF contains no digital text (it is a scanned image). This API does not support image-based OCR.")
+    raise HTTPException(
+        status_code=422, 
+        detail="This PDF contains no digital text (it is a scanned image). Please process scanned PDFs through an OCR service (like Azure Document Intelligence or Tesseract) before sending to this API."
+    )
 
 def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
     """Sends text to local Ollama for structured extraction."""
