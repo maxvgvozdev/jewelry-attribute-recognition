@@ -941,6 +941,25 @@ Return ONLY valid JSON matching this structure:
 
 from pdfminer.high_level import extract_text
 
+def _clean_ocr_text(text: str) -> str:
+    """
+    Strips out OCR garbage characters that crash LLMs.
+    (e.g., 'PSING69573' or 'lllll]lwwflgflzllillllflllllll Iliff’? E:I’;fifp‘:::;“e')
+    """
+    if not text:
+        return ""
+    
+    # Remove long strings of garbage characters (6+ consecutive non-vowel chars)
+    text = re.sub(r'[^aeiouyAEIOUY]+', '', text)
+    
+    # Fix common OCR spacing errors (e.g., "6.5mm" -> "6.5 mm", "w/" -> " with ")
+    text = re.sub(r'(\d)\s*([A-Za-z]+)\s+', r'\1 \2 ', text)
+    
+    # Collapse multiple spaces into a single space
+    text = re.sub(r'\s+', ' , text)
+    
+    return text.strip()
+
 def _extract_text_from_pdf(file_path: str) -> str:
     """Extracts text from a digital PDF. Returns empty string if the PDF is a scanned image."""
     try:
