@@ -968,7 +968,7 @@ def _extract_text_from_pdf(file_path: str) -> str:
         
         b64_image = base64.b64encode(img_bytes).decode("utf-8")
         
-        ocr_prompt = """You are an OCR bot. Extract all text from this image exactly as written. Do not format as JSON, just raw text."""
+        ocr_prompt = """You are a data extraction AI. Look at this invoice image. Find the table containing item descriptions, SKUs, quantities, and prices. Return ONLY a summary of the items in exactly this JSON format, do not include any other text: [{"sku": "", "description": "", "qty": 0, "price": 0}] Do NOT transcribe the entire page. Just extract the jewelry item rows."""
         
         from service.vision_client import VISION_API_URL, VISION_MODEL
         
@@ -976,7 +976,7 @@ def _extract_text_from_pdf(file_path: str) -> str:
         resp = requests.post(
             f"{VISION_API_URL}/api/generate", 
             json={"model": VISION_MODEL, "prompt": ocr_prompt, "images": [b64_image], "stream": False, "options": {"temperature": 0.1}}, 
-            timeout=60 
+            timeout=180 
         )
         resp.raise_for_status()
         ocr_text = resp.json().get("response", "")
