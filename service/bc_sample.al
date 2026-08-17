@@ -1,20 +1,3 @@
-# Sample Business Central AL code to call the Jewelry Recognition API
-
-pageextension 50100 CustomerListExtension extends "Customer List"
-{
-    layout
-    {
-        addlast(Content)
-        {
-            group(JewelryRecognition)
-            {
-                Caption = 'Jewelry Recognition';
-                field(JewelryBrand; Rec."No.") { ApplicationArea = All; }
-            }
-        }
-    }
-}
-
 codeunit 50100 JewelryRecognitionClient
 {
     var
@@ -25,10 +8,10 @@ codeunit 50100 JewelryRecognitionClient
         RequestHeaders: HttpHeaders;
         RequestMessage: HttpRequestMessage;
 
-    procedure RecognizeJewelry(Brand: Text; VendorItemNumber: Text; UpcCode: Text; SourceUrl: Text): JsonObject
+    // Added PreFilledAttributes parameter
+    procedure RecognizeJewelry(Brand: Text; VendorItemNumber: Text; UpcCode: Text; SourceUrl: Text; PreFilledAttributes: JsonObject): JsonObject
     var
         Body: JsonObject;
-        Token: JsonToken;
     begin
         JewelryApiUrl := 'http://<SERVER>:8000/api/jewelry/recognize';
 
@@ -36,6 +19,10 @@ codeunit 50100 JewelryRecognitionClient
         Body.Add('vendor_item_number', VendorItemNumber);
         Body.Add('upc_code', UpcCode);
         Body.Add('source_url', SourceUrl);
+        
+        // CRITICAL: Send the attributes parsed from the invoice
+        if not PreFilledAttributes.IsEmpty() then
+            Body.Add('pre_filled_attributes', PreFilledAttributes);
 
         RequestContent.WriteFrom(Body.AsToken());
         RequestContent.GetHeaders(RequestHeaders);
@@ -43,7 +30,8 @@ codeunit 50100 JewelryRecognitionClient
         RequestHeaders.Add('Content-Type', 'application/json');
 
         RequestMessage.Method := 'POST';
-        RequestMessage.SetRequestUri(Brand, JewelryApiUrl); // corrected below
+        // FIX: SetRequestUri takes exactly ONE parameter
+        RequestMessage.SetRequestUri(JewelryApiUrl); 
         RequestMessage.Content := RequestContent;
 
         if HttpClient.Send(RequestMessage, HttpResponse) then begin
@@ -62,7 +50,6 @@ codeunit 50100 JewelryRecognitionClient
     local procedure ParseResponse(HttpResponse: HttpResponseMessage): JsonObject
     var
         ResponseText: Text;
-        JsonReader: JsonReader;
         JsonObject: JsonObject;
     begin
         HttpResponse.Content.ReadAs(ResponseText);

@@ -40,13 +40,6 @@ from fastapi.responses import JSONResponse
 
 # --- UPGRADE EXISTING MODEL ---
 
-class JewelryRequest(BaseModel):
-    brand: str = Field(..., json_schema_extra={"examples": ["David Yurman"]})
-    vendor_item_number: str = ""
-    upc_code: str = ""
-    source_url: str = ""
-    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice text to prevent Vision AI from overwriting them")
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -93,12 +86,12 @@ class JewelryRequest(BaseModel):
     vendor_item_number: str = Field("", json_schema_extra={"examples": ["B18729D88APRDIM"]})
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
+    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice text to prevent Vision AI from overwriting them")
 
-    @field_validator("vendor_item_number", "upc_code", mode="before")
+    @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
     @classmethod
     def _empty_to_str(cls, v):
-        if v is None:
-            return ""
+        if v is None: return ""
         return str(v).strip()
 
 
@@ -152,21 +145,30 @@ class JewelryAttributes(BaseModel):
     clasp_type: Optional[str]
     earring_back: Optional[str]
 
-# --- NEW MODELS FOR INVOICE PARSING ---
 
-class InvoiceItem(BaseModel):
-    vendor_item_number: str = ""
-    quantity: Optional[float] = None
+# --- NEW MODELS FOR INVOICE PARSING (Vision AI Output) ---
+class InvoiceLineItem(BaseModel):
+    sku: Optional[str] = None
+    sku_alternate: Optional[str] = None
+    description: Optional[str] = None
+    qty: Optional[float] = None
+    unit: Optional[str] = None
+    weight: Optional[float] = None
+    unit_price: Optional[float] = None
     price: Optional[float] = None
-    description: str = ""
-    brand: str = ""
-    attributes: Optional[JewelryAttributes] = None
+    price_basis: Optional[str] = None
 
 class InvoiceResponse(BaseModel):
-    vendor_name: str = ""
-    vendor_invoice_no: str = ""
-    vendor_invoice_date: str = ""
-    items: List[InvoiceItem] = []
+    vendor_name: Optional[str] = None
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    currency: Optional[str] = None
+    line_items: List[InvoiceLineItem] = []
+    subtotal: Optional[float] = None
+    freight: Optional[float] = None
+    total: Optional[float] = None
+    needs_review: bool = False
+    review_reason: Optional[str] = None
 
 class JewelryResponse(BaseModel):
     item: Dict[str, Any]
@@ -295,6 +297,85 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
             pass
 
     return None
+
+import fitz  # PyMuPDF
+import base64
+
+INVOICE_VISION_MODEL = os.getenv("INVOICE_VISION_MODEL", "qwen3-vl:32b-32k")
+
+INVOICE_VISION_PROMPT = """You are a precise invoice data extraction engine.
+You will receive one or more scanned invoice page images. Read only what is visually present.
+Your task is to extract purchased product line items and invoice totals.
+Do not extract legal text, payment terms, shipping terms, warranty statements, destination control statements, batch/receipt stamps, tracking numbers, purchase order numbers, sales order numbers, customer numbers, or parcel numbers as product line items.
+
+For each purchased product line item, extract:
+- sku: Vendor product identifier (Article, Item, Style, SKU). Do not use PO/SO/Tracking numbers.
+- sku_alternate: Second product code linked to the same line (e.g., packing-list code). Null if absent.
+- description: Clean product description. Normalize line breaks to spaces.
+- qty: Numeric quantity. Null if missing.
+- unit: Unit of measure (PC, GM, EA). Null if absent.
+- weight: Numeric line weight. Null if absent.
+- unit_price: Numeric unit price. Use wholesale/invoice price if both retail and wholesale are shown.
+- price: Numeric amount charged for the line (extended price).
+- price_basis: "per_piece", "per_gram", "per_line", or "unknown".
+
+Also extract invoice-level fields: vendor_name, invoice_number, invoice_date (YYYY-MM-DD), currency, subtotal, freight, total.
+Number rules: Remove thousands separators, use plain JSON numbers, period as decimal. Do not invent values. Use null for missing/illegible.
+
+Return ONLY one valid JSON object. No Markdown, no code fences, no explanations.
+Shape:
+{
+  "vendor_name": null, "invoice_number": null, "invoice_date": null, "currency": null,
+  "line_items": [
+    {"sku": null, "sku_alternate": null, "description": null, "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
+  ],
+  "subtotal": null, "freight": null, "total": null, "needs_review": false, "review_reason": null
+}"""
+
+def _render_pdf_to_images(file_path: str, dpi: int = 220) -> List[str]:
+    """Converts PDF pages to base64 encoded JPEGs for Vision AI."""
+    doc = fitz.open(file_path)
+    images_b64 = []
+    zoom = dpi / 72
+    mat = fitz.Matrix(zoom, zoom)
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("jpeg")
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        images_b64.append(b64)
+    doc.close()
+    return images_b64
+
+def _ask_vision_llm_for_invoice(images_b64: List[str]) -> Dict[str, Any]:
+    """Sends multiple images to qwen3-vl on spark via Ollama."""
+    from service.vision_client import VISION_API_URL
+    
+    payload = {
+        "model": INVOICE_VISION_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": INVOICE_VISION_PROMPT,
+                "images": images_b64
+            }
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0,
+            "num_ctx": 32768,
+            "num_predict": 4096
+        }
+    }
+    
+    url = f"{VISION_API_URL}/api/chat"
+    logger.info(f"Sending {len(images_b64)} invoice page(s) to {INVOICE_VISION_MODEL} on spark...")
+    resp = requests.post(url, json=payload, timeout=300) # Invoices take longer
+    resp.raise_for_status()
+    
+    data = resp.json()
+    raw_content = data.get("message", {}).get("content", "")
+    return _extract_json_from_text(raw_content) or {}
 
 # ---------------------------------------------------------------------------
 # BC365 Master Data Strict Schema Mapping
@@ -763,12 +844,17 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         else:
             confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
 
-    if vendor_item_number:
-        search_query = f"{brand} {vendor_item_number}"
-    elif upc_code:
-        search_query = f"{brand} {upc_code}"
+    # SHORT-CIRCUIT: If BC already knows the exact URL, skip Firecrawl search
+    if source_url:
+        resolved_url = source_url
+        confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
     else:
-        raise HTTPException(status_code=400, detail="Either vendor_item_number or upc_code must be provided.")
+        if vendor_item_number:
+            search_query = f"{brand} {vendor_item_number}"
+        elif upc_code:
+            search_query = f"{brand} {upc_code}"
+        else:
+            raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
 
     image_urls = []
     
@@ -884,7 +970,7 @@ async def health():
     return {"status": "ok", "service": SERVICE_NAME}
 
 @app.post("/api/jewelry/recognize", response_model=JewelryResponse)
-async def recognize(req: JewelryRequest):
+def recognize(req: JewelryRequest):
     logger.info("Received jewelry request: brand=%s, vendor=%s", req.brand, req.vendor_item_number)
     try:
         # We now pass the pre_filled_attributes from the request down to the workflow
@@ -956,7 +1042,7 @@ def _clean_ocr_text(text: str) -> str:
     text = re.sub(r'(\d)\s*([A-Za-z]+)\s+', r'\1 \2 ', text)
     
     # Collapse multiple spaces into a single space
-    text = re.sub(r'\s+', ' , text)
+    text = re.sub(r'\s+', ' ', text)
     
     return text.strip()
 
@@ -995,36 +1081,33 @@ def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
 
 
 @app.post("/api/invoice/parse", response_model=InvoiceResponse)
-async def parse_invoice(file: UploadFile = File(...)):
-    """
-    Step 1: BC uploads a vendor invoice PDF. 
-    Service extracts text and uses local AI to structure it.
-    """
+def parse_invoice(file: UploadFile = File(...)):
+    """Step 1: BC uploads a vendor invoice PDF. Service renders to images and uses Vision AI."""
     logger.info(f"Received invoice PDF: {file.filename}")
     
-    # 1. Save uploaded file temporarily
     temp_pdf = ARTIFACTS_DIR / f"inv_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.pdf"
     with open(temp_pdf, "wb") as f:
-        f.write(await file.read())
+        f.write(file.file.read()) # Note: file.file.read() for synchronous def
         
-    # 2. Extract text
-    pdf_text = _extract_text_from_pdf(str(temp_pdf))
-    if not pdf_text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from PDF. Is it a scanned image?")
-        
-    # 3. Send to Local LLM
     try:
-        llm_result = _ask_local_llm(INVOICE_EXTRACTION_PROMPT, pdf_text)
+        # 1. Render PDF to images
+        images_b64 = _render_pdf_to_images(str(temp_pdf))
+        if not images_b64:
+            raise HTTPException(status_code=400, detail="PDF contains 0 pages.")
+            
+        # 2. Send to Vision AI
+        llm_result = _ask_vision_llm_for_invoice(images_b64)
+        
+        # 3. Format and return
+        return InvoiceResponse(**llm_result)
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Local LLM failed to parse invoice: {e}")
-
-    # 4. Format and return
-    return InvoiceResponse(
-        vendor_name=llm_result.get("vendor_name", ""),
-        vendor_invoice_no=llm_result.get("vendor_invoice_no", ""),
-        vendor_invoice_date=llm_result.get("vendor_invoice_date", ""),
-        items=llm_result.get("items", [])
-    )
+        logger.exception("Invoice parsing failed")
+        raise HTTPException(status_code=500, detail=f"Invoice parsing failed: {e}")
+    finally:
+        # Optional: clean up the temporary PDF to save space
+        if temp_pdf.exists():
+            temp_pdf.unlink()
 
 # ---------------------------------------------------------------------------
 # Windows Service wrapper
