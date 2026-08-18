@@ -87,8 +87,8 @@ class JewelryRequest(BaseModel):
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
     
-    # CRITICAL ADDITION FOR PART 2:
-    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice to lock them")
+    # CRITICAL: This field must be present to prevent the 500 AttributeError
+    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice")
 
     @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
     @classmethod
@@ -872,7 +872,7 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         else:
             confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
 
-    # SHORT-CIRCUIT: If BC already knows the exact URL, skip Firecrawl search
+    # SHORT-CIRCUIT: If BC provides a source_url, skip web search entirely
     if source_url:
         resolved_url = source_url
         confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
@@ -883,8 +883,8 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
             search_query = f"{brand} {upc_code}"
         else:
             raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
-
-    image_urls = []
+            
+        image_urls = []
     
     if _firecrawl_available():
         try:
