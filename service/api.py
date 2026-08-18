@@ -157,6 +157,8 @@ class InvoiceLineItem(BaseModel):
     unit_price: Optional[float] = None
     price: Optional[float] = None
     price_basis: Optional[str] = None
+    # NEW: Add normalized attributes here
+    attributes: Optional[Dict[str, Any]] = None 
 
 class InvoiceResponse(BaseModel):
     vendor_name: Optional[str] = None
@@ -788,17 +790,41 @@ def _build_attributes_from_text_and_vision(
         attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round")
 
     # -----------------------------------------------------------------------
-    # 6. MATERIAL & CATEGORY OVERRIDES
+    # 6. MATERIAL & CATEGORY OVERRIDES (Strictly mapped to BC365 Master Data)
     # -----------------------------------------------------------------------
-    if attrs.get("metal_type") is None: # CHANGED
-        if "18k rose gold" in text_lower or "18-karat rose gold" in text_lower:
-            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Rose Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "Rose")
-        elif "18k white gold" in text_lower or "18-karat white gold" in text_lower:
-            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K White Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
-        elif "18k yellow gold" in text_lower or "18-karat yellow gold" in text_lower:
-            attrs["metal_type"] = _normalize_to_bc365("metal_type", "18K Yellow Gold"); attrs["metal_color"] = _normalize_to_bc365("metal_color", "Yellow")
-        elif "platinum" in text_lower:
-            attrs["metal_color"] = _normalize_to_bc365("metal_color", "White")
+    if attrs.get("metal_type") is None:
+        # Platinum & Silver
+        if "platinum" in text_lower or "950" in text_lower:
+            attrs["metal_type"] = "950PL"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "White"
+        elif "sterling" in text_lower or "925" in text_lower or "silver" in text_lower:
+            attrs["metal_type"] = "STSILVER"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "White"
+        elif "stainless steel" in text_lower or "steel" in text_lower:
+            attrs["metal_type"] = "STSTEEL"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "GREY"
+            
+        # 18K Gold (Separated into Type and Color)
+        elif "18k rose" in text_lower or "18kt rose" in text_lower:
+            attrs["metal_type"] = "18K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "Rose"
+        elif "18k white" in text_lower or "18kt white" in text_lower:
+            attrs["metal_type"] = "18K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "White"
+        elif "18k yellow" in text_lower or "18kt yellow" in text_lower or "18k" in text_lower:
+            attrs["metal_type"] = "18K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "Yellow"
+            
+        # 14K Gold (Separated into Type and Color)
+        elif "14k rose" in text_lower or "14kt rose" in text_lower:
+            attrs["metal_type"] = "14K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "Rose"
+        elif "14k white" in text_lower or "14kt white" in text_lower:
+            attrs["metal_type"] = "14K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "White"
+        elif "14k yellow" in text_lower or "14kt yellow" in text_lower or "14k" in text_lower:
+            attrs["metal_type"] = "14K"
+            if attrs.get("metal_color") is None: attrs["metal_color"] = "Yellow"
 
     if attrs.get("product_type") is None: # CHANGED
         if "solitaire" in text_lower and "diamond" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
@@ -1098,8 +1124,40 @@ def parse_invoice(file: UploadFile = File(...)):
         # 2. Send to Vision AI
         llm_result = _ask_vision_llm_for_invoice(images_b64)
         
-        # 3. Format and return
-        return InvoiceResponse(**llm_result)
+        # --- NEW: Process descriptions to extract normalized BC365 attributes ---
+        vendor_name = llm_result.get("vendor_name", "")
+        raw_line_items = llm_result.get("line_items", [])
+        
+        processed_items = []
+        for raw_item in raw_line_items:
+            desc = raw_item.get("description") or ""
+            sku = raw_item.get("sku") or ""
+            
+            # Run the text heuristics on the invoice description
+            item_attrs = _build_attributes_from_text_and_vision(
+                brand=vendor_name,
+                text=desc,
+                vision_results=[], # No web images yet
+                item_number=sku,
+                pre_filled_attrs=None
+            )
+            
+            # Attach the normalized attributes to the line item
+            raw_item["attributes"] = item_attrs
+            processed_items.append(InvoiceLineItem(**raw_item))
+            
+        return InvoiceResponse(
+            vendor_name=vendor_name,
+            invoice_number=llm_result.get("invoice_number"),
+            invoice_date=llm_result.get("invoice_date"),
+            currency=llm_result.get("currency"),
+            line_items=processed_items,
+            subtotal=llm_result.get("subtotal"),
+            freight=llm_result.get("freight"),
+            total=llm_result.get("total"),
+            needs_review=llm_result.get("needs_review", False),
+            review_reason=llm_result.get("review_reason")
+        )
         
     except Exception as e:
         logger.exception("Invoice parsing failed")
