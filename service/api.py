@@ -86,7 +86,9 @@ class JewelryRequest(BaseModel):
     vendor_item_number: str = Field("", json_schema_extra={"examples": ["B18729D88APRDIM"]})
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
-    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice text to prevent Vision AI from overwriting them")
+    
+    # CRITICAL ADDITION FOR PART 2:
+    pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice to lock them")
 
     @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
     @classmethod
