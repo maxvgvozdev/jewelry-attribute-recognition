@@ -87,7 +87,7 @@ class JewelryRequest(BaseModel):
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
     
-    # CRITICAL: This field must be present to prevent the 500 AttributeError
+    # CRITICAL FIX: This field was missing, causing the 500 AttributeError
     pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice")
 
     @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
@@ -791,7 +791,7 @@ def _build_attributes_from_text_and_vision(
     if attrs.get("center_stone_shape") is None and "round" in text_lower: # CHANGED
         attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round")
 
-    # -----------------------------------------------------------------------
+        # -----------------------------------------------------------------------
     # 6. MATERIAL & CATEGORY OVERRIDES (Strictly mapped to BC365 Master Data)
     # -----------------------------------------------------------------------
     if attrs.get("metal_type") is None:
@@ -884,28 +884,38 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         else:
             raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
             
-        image_urls = []
+    image_urls = []
     
-    if _firecrawl_available():
-        try:
-            search_result = _run_firecrawl_search(search_query)
-            items = search_result.get("data", []) or []
-            if items:
-                resolved_url = items[0].get("url", "")
-                page_text = items[0].get("description", "") or ""
-                
-                firecrawl_images = items[0].get("images", [])
-                if firecrawl_images:
-                    image_urls = firecrawl_images
-                    confidence_notes.append("Extracted product data and images via Firecrawl V2.")
-                else:
-                    confidence_notes.append("Firecrawl V2 extracted text, but 0 images.")
-                    
-        except Exception as exc:
-            confidence_notes.append(f"Firecrawl proxy failed; using direct HTTP fallback only. ({exc})")
+    # SHORT-CIRCUIT: If BC provides a source_url, skip web search entirely
+    if source_url:
+        resolved_url = source_url
+        confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
     else:
-        confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
+        if vendor_item_number:
+            search_query = f"{brand} {vendor_item_number}"
+        elif upc_code:
+            search_query = f"{brand} {upc_code}"
+        else:
+            raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
 
+        if _firecrawl_available():
+            try:
+                search_result = _run_firecrawl_search(search_query)
+                items = search_result.get("data", []) or []
+                if items:
+                    resolved_url = items[0].get("url", "")
+                    page_text = items[0].get("description", "") or ""
+                    firecrawl_images = items[0].get("images", [])
+                    if firecrawl_images:
+                        image_urls = firecrawl_images
+                        confidence_notes.append("Extracted product data and images via Firecrawl V2.")
+                    else:
+                        confidence_notes.append("Firecrawl V2 extracted text, but 0 images.")
+            except Exception as exc:
+                confidence_notes.append(f"Firecrawl proxy failed; using direct HTTP fallback only. ({exc})")
+        else:
+            confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
+                    
     if not resolved_url:
         brand_lower = brand.lower()
         item_to_use = vendor_item_number or upc_code
