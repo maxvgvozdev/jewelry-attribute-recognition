@@ -1,23 +1,28 @@
-# Business Central Integration Manual: Jewelry Attribute Recognition API
+Business Central Integration Manual: Jewelry Attribute Recognition API
+1. Overview
+This document outlines how to integrate the Jewelry Attribute Recognition API into Microsoft Business Central using AL.
 
-## 1. Overview
-This document outlines how to integrate the Jewelry Attribute Recognition API into Microsoft Business Central using AL. 
+The API operates in a 2-Step Workflow:
 
-The API accepts a Brand, Vendor Item Number, and/or UPC, and returns a standardized 31-attribute JSON payload. **Because the API downloads images and processes them via a Vision AI, responses can take up to 600 seconds.** Therefore, direct synchronous calls from the BC UI will crash the user session. This manual uses a background Job Queue architecture to handle this gracefully.
+Step 1 (Invoice Parsing): BC uploads a vendor invoice PDF. The API uses Spark AI to extract Vendor Info, Line Items, Brand, and basic Jewelry Attributes.
+Step 2 (Item Enrichment): BC sends the extracted Item Number, Brand, and the pre-filled attributes from Step 1. The API searches the web, downloads images, uses Vision AI to analyze them, and fills in any missing attributes.
+Because both steps involve Vision AI processing, responses can take up to 600 seconds (10 minutes). Direct synchronous calls from the BC UI will crash the user session. This manual uses a background Job Queue architecture to handle this gracefully.
 
-**API Endpoint:** `POST http://20.230.85.3:8000/api/jewelry/recognize`
+API Endpoints:
 
-## 2. Prerequisites
-*   **Network Access:** The BC Server must be able to reach the Python API server on port 8000.
-*   **Error Handling:** The API returns standard HTTP status codes:
-    *   `200 OK`: Success.
-    *   `404 Not Found`: Search failed to find the item. (BC should log this or prompt the user for a direct `source_url`).
-    *   `500 Internal Server Error`: Vision AI or network failure.
+Step 1: POST http://<SERVER_IP>:8000/api/invoice/parse
+Step 2: POST http://<SERVER_IP>:8000/api/jewelry/recognize
+2. Prerequisites
+Network Access: The BC Server must be able to reach the Python API server on port 8000.
+Error Handling: The API returns standard HTTP status codes:
+200 OK: Success.
+404 Not Found: Search failed to find the item. (BC should log this or prompt the user for a direct source_url).
+500 Internal Server Error: Vision AI, Firecrawl, or network failure.
+3. Data Structure: The 31 Attributes Table
+Create a dedicated table to hold the exact 31 attributes returned by the API. This keeps the standard Item table clean and groups the jewelry-specific data logically.
 
-## 3. Data Structure: The 31 Attributes Table
-Create a dedicated table to hold the exact 31 attributes returned by the API. This keeps the standard `Item` table clean and groups the jewelry-specific data logically.
+al
 
-```al
 table 50101 "Jewelry Item Attribute"
 {
     Caption = 'Jewelry Item Attribute';
@@ -66,70 +71,137 @@ table 50101 "Jewelry Item Attribute"
         key(PK; "Item No.") { Clustered = true; }
     }
 }
-```
 
-## 4. Core Integration Codeunit
-This codeunit handles the HTTP request, parses the JSON safely (handling `null` values without errors), and maps all 31 fields.
+4. Core Integration Codeunit
+This codeunit handles the HTTP requests for both Step 1 (PDF Upload) and Step 2 (Item Enrichment). It safely parses JSON null values and maps all 31 fields.
 
-```al
+al
+
 codeunit 50100 "Jewelry AI Mgmt."
 {
-    procedure SyncItemAttributes(ItemNo: Code[20])
     var
-        JewelrySetup: Record "Jewelry AI Setup";
-        Item: Record Item;
+        APIBaseUrl: Text;
+
+    local procedure GetApiUrl(): Text
+    begin
+        // Set this via your setup table or hardcoded for testing
+        exit('http://<SERVER_IP>:8000');
+    end;
+
+    // =========================================================================
+    // STEP 1: Parse Invoice PDF
+    // =========================================================================
+    procedure ParseInvoicePdf(PdfInStream: InStream; FileName: Text) ResponseJson: JsonObject
+    var
+        Client: HttpClient;
+        RequestMessage: HttpRequestMessage;
+        Response: HttpResponseMessage;
+        RequestContent: HttpContent;
+        RequestHeaders: HttpHeaders;
+        ErrorResponse: JsonObject;
+        MultipartBody: TextBuilder;
+        Base64Convert: Codeunit "Base64 Convert";
+        PdfBase64: Text;
+    begin
+        Client.Timeout(600000); // 10 min timeout
+
+        // AL requires manual construction of Multipart Form Data for file uploads
+        PdfBase64 := Base64Convert.ToBase64(PdfInStream);
+        
+        MultipartBody.AppendLine('--Boundary_ABC123');
+        MultipartBody.AppendLine('Content-Disposition: form-data; name="file"; filename="' + FileName + '"');
+        MultipartBody.AppendLine('Content-Type: application/pdf');
+        MultipartBody.AppendLine('');
+        MultipartBody.AppendLine(PdfBase64);
+        MultipartBody.AppendLine('--Boundary_ABC123--');
+
+        RequestContent.WriteFrom(MultipartBody.ToText());
+        RequestContent.GetHeaders(RequestHeaders);
+        RequestHeaders.Remove('Content-Type');
+        RequestHeaders.Add('Content-Type', 'multipart/form-data; boundary=Boundary_ABC123');
+
+        RequestMessage.Method := 'POST';
+        RequestMessage.SetRequestUri(GetApiUrl() + '/api/invoice/parse');
+        RequestMessage.Content := RequestContent;
+
+        if Client.Send(RequestMessage, Response) then begin
+            if Response.IsSuccessStatusCode() then
+                ResponseJson := ParseHttpResponse(Response)
+            else begin
+                ErrorResponse.Add('error', 'HTTP ' + Format(Response.HttpStatusCode()));
+                ErrorResponse.Add('response_text', GetResponseText(Response));
+                ResponseJson := ErrorResponse;
+            end;
+        end else begin
+            ErrorResponse.Add('error', 'Network request failed to reach Python API.');
+            ResponseJson := ErrorResponse;
+        end;
+    end;
+
+    // =========================================================================
+    // STEP 2: Enrich Item Attributes via Web/Vision AI
+    // =========================================================================
+    procedure EnrichItemAttributes(ItemNo: Code[20]; Brand: Text; VendorItemNo: Text; UpcCode: Text; SourceUrl: Text; PreFilledAttributes: JsonObject)
+    var
         JewelAttr: Record "Jewelry Item Attribute";
         Client: HttpClient;
         Response: HttpResponseMessage;
-        RequestBody: Text;
+        RequestBody: JsonObject;
+        RequestContent: HttpContent;
+        RequestHeaders: HttpHeaders;
+        RequestMessage: HttpRequestMessage;
         ResponseText: Text;
         JsonObj: JsonObject;
         AttributesObj: JsonObject;
         JToken: JsonToken;
     begin
-        if not JewelrySetup.Get() then
-            Error('Jewelry AI Setup is missing.');
-        if not Item.Get(ItemNo) then
-            Error('Item %1 does not exist.', ItemNo);
+        Client.Timeout(600000); // 10 min timeout
 
         // 1. Build Request Payload
-        JsonObj.Add('brand', Item."Manufacturer Code"); 
-        JsonObj.Add('vendor_item_number', Item."Vendor Item No.");
-        JsonObj.Add('upc_code', Item."GTIN"); 
-        JsonObj.Add('source_url', ''); 
+        RequestBody.Add('brand', Brand);
+        RequestBody.Add('vendor_item_number', VendorItemNo);
+        RequestBody.Add('upc_code', UpcCode);
+        RequestBody.Add('source_url', SourceUrl);
         
-        JsonObj.WriteTo(RequestBody);
+        // Pass the attributes extracted from the invoice in Step 1
+        if not PreFilledAttributes.IsEmpty() then
+            RequestBody.Add('pre_filled_attributes', PreFilledAttributes);
+
+        RequestContent.WriteFrom(Format(RequestBody));
+        RequestContent.GetHeaders(RequestHeaders);
+        RequestHeaders.Remove('Content-Type');
+        RequestHeaders.Add('Content-Type', 'application/json');
+
+        RequestMessage.Method := 'POST';
+        RequestMessage.SetRequestUri(GetApiUrl() + '/api/jewelry/recognize');
+        RequestMessage.Content := RequestContent;
 
         // 2. Execute HTTP Call
-        // Timeout set to 10 minutes (600,000 ms) as Vision AI processing takes time.
-        Client.Timeout(600000); 
-        if not Client.Post(JewelrySetup."API Endpoint URL" + '/api/jewelry/recognize', RequestBody, Response) then
+        if not Client.Send(RequestMessage, Response) then
             Error('Network error connecting to Jewelry AI service.');
 
-        // 3. Handle HTTP Errors
         if not Response.IsSuccessStatusCode then begin
             Response.Content().ReadAs(ResponseText);
             Error('API returned error %1: %2', Response.HttpStatusCode, ResponseText);
         end;
 
-        // 4. Parse Response JSON
+        // 3. Parse Response JSON
         Response.Content().ReadAs(ResponseText);
         if not JsonObj.ReadFrom(ResponseText) then
             Error('Invalid JSON returned from API.');
 
-        // 5. Extract the "attributes" node
         if not JsonObj.Get('attributes', JToken) then
             Error('API response missing "attributes" object.');
         AttributesObj := JToken.AsObject();
 
-        // 6. Get or Create the Jewelry Attribute record for this Item
+        // 4. Get or Create the Jewelry Attribute record
         if not JewelAttr.Get(ItemNo) then begin
             JewelAttr.Init();
             JewelAttr."Item No." := ItemNo;
             JewelAttr.Insert();
         end;
 
-        // 7. Map ALL 31 JSON fields to BC Table Fields
+        // 5. Map ALL 31 JSON fields to BC Table Fields
         JewelAttr.Validate("Metal Type", GetJsonFieldText(AttributesObj, 'metal_type'));
         JewelAttr.Validate("Metal Color", GetJsonFieldText(AttributesObj, 'metal_color'));
         JewelAttr.Validate("Stone Primary Color", GetJsonFieldText(AttributesObj, 'stone_primary_color'));
@@ -165,6 +237,26 @@ codeunit 50100 "Jewelry AI Mgmt."
         JewelAttr.Modify(true);
     end;
 
+    local procedure ParseHttpResponse(Response: HttpResponseMessage): JsonObject
+    var
+        ResponseText: Text;
+        ResponseJson: JsonObject;
+    begin
+        Response.Content.ReadAs(ResponseText);
+        if ResponseJson.ReadFrom(ResponseText) then
+            exit(ResponseJson);
+        ResponseJson.Add('raw', ResponseText);
+        exit(ResponseJson);
+    end;
+
+    local procedure GetResponseText(Response: HttpResponseMessage): Text
+    var
+        ResponseText: Text;
+    begin
+        Response.Content.ReadAs(ResponseText);
+        exit(ResponseText);
+    end;
+
     local procedure GetJsonFieldText(JsonObj: JsonObject; KeyName: Text): Text[100]
     var
         JToken: JsonToken;
@@ -175,14 +267,14 @@ codeunit 50100 "Jewelry AI Mgmt."
         exit('');
     end;
 }
-```
 
-## 5. CRITICAL: Asynchronous Background Processing
-**Do not bind `Jewelry AI Mgmt.` directly to a page action.** BC sessions have strict timeouts. The API takes up to 600 seconds. Doing this synchronously will freeze and crash the user's session.
+5. CRITICAL: Asynchronous Background Processing
+Do not run either step synchronously from the UI. BC sessions have strict timeouts. Both Step 1 (PDF Parsing) and Step 2 (Web Enrichment) can take minutes.
 
-You **must** wrap the call in a Background Job Queue.
+You must wrap the calls in a Background Job Queue.
 
-```al
+al
+
 codeunit 50101 "Jewelry AI Job Queue"
 {
     TableNo = "Job Queue Entry";
@@ -190,88 +282,80 @@ codeunit 50101 "Jewelry AI Job Queue"
     trigger OnRun()
     var
         JewelryMgmt: Codeunit "Jewelry AI Mgmt.";
+        Item: Record Item;
+        // In a real scenario, you'd retrieve the PDF stream and PreFilledAttributes 
+        // from a temporary staging table using Rec."Parameter String" as the ID.
     begin
-        if Rec."Parameter String" = '' then
-            Error('Item No. is missing in Job Queue Parameter String.');
-            
-        JewelryMgmt.SyncItemAttributes(Rec."Parameter String");
+        // Example logic for Step 2:
+        if Item.Get(Rec."Parameter String") then begin
+            // Fetch pre-filled attributes from staging table...
+            // JewelryMgmt.EnrichItemAttributes(Item."No.", Item."Manufacturer Code", Item."Vendor Item No.", Item."GTIN", '', PreFilledAttrs);
+        end;
     end;
 }
-```
 
-```al
-codeunit 50102 "Jewelry AI Action"
-{
-    [FunctionBehavior(FunctionBehavior::ConfirmCall)]
-    procedure QueueItemForRecognition(ItemNo: Code[20])
-    var
-        JobQueueEntry: Record "Job Queue Entry";
-        JobQueueMgt: Codeunit "Job Queue - Enqueue";
-    begin
-        JobQueueEntry.Init();
-        JobQueueEntry."Object Type to Run" := JobQueueEntry."Object Type to Run"::Codeunit;
-        JobQueueEntry."Object ID to Run" := CODEUNIT::"Jewelry AI Job Queue";
-        JobQueueEntry."Parameter String" := ItemNo;
-        JobQueueEntry."Description" := 'Jewelry AI Recognition for ' + ItemNo;
-        JobQueueEntry."Maximum No. of Attempts to Run" := 1;
-        
-        JobQueueMgt.EnqueueJobQueueEntry(JobQueueEntry);
-        
-        Message('Item %1 has been queued for AI recognition. Attributes will update in the background shortly.', ItemNo);
-    end;
-}
-```
+6. UI Integration (Item Card)
+Add actions to allow users to trigger the workflow. Typically, a user uploads a PDF (Step 1), reviews the extracted data in BC, and then clicks "Enrich Item" (Step 2).
 
-## 6. UI Integration (Item Card)
-Add an action to the Item Card page to allow users to trigger the recognition.
+al
 
-```al
 pageextension 50100 "Item Card Ext" extends "Item Card"
 {
     actions
     {
         addlast(Processing)
         {
-            action(ActionAIRecognize)
+            action(ActionAIEnrich)
             {
                 ApplicationArea = All;
-                Caption = 'Recognize Jewelry Attributes';
+                Caption = 'Enrich Jewelry Attributes (Web/Vision)';
                 Image = Picture;
-                ToolTip = 'Send item details to the AI service to extract jewelry attributes.';
+                ToolTip = 'Searches the web and uses Vision AI to fill missing jewelry attributes.';
 
                 trigger OnAction()
                 var
-                    JewelryAIAction: Codeunit "Jewelry AI Action";
+                    JobQueueEntry: Record "Job Queue Entry";
+                    JobQueueMgt: Codeunit "Job Queue - Enqueue";
                 begin
-                    JewelryAIAction.QueueItemForRecognition(Rec."No.");
+                    // Enqueue Step 2
+                    JobQueueEntry.Init();
+                    JobQueueEntry."Object Type to Run" := JobQueueEntry."Object Type to Run"::Codeunit;
+                    JobQueueEntry."Object ID to Run" := CODEUNIT::"Jewelry AI Job Queue";
+                    JobQueueEntry."Parameter String" := Rec."No.";
+                    JobQueueEntry."Description" := 'Jewelry AI Enrichment for ' + Rec."No.";
+                    JobQueueEntry."Maximum No. of Attempts to Run" := 1;
+                    JobQueueMgt.EnqueueJobQueueEntry(JobQueueEntry);
+                    
+                    Message('Item %1 has been queued for Web/Vision AI enrichment.', Rec."No.");
                 end;
             }
         }
     }
 }
-```
-*(Optional)*: Add a FactBox on the Item Card page to display the fields from the `Jewelry Item Attribute` table so users can see the results without navigating away.
 
-## 7. Testing from the BC Server
+7. Testing from the BC Server
 Before testing inside BC, verify network connectivity and API functionality directly from the Business Central server via PowerShell:
 
-```powershell
-# 1. Test Health
-Invoke-RestMethod -Method Get -Uri http://20.230.85.3:8000/health
+powershell
 
-# 2. Test Full Recognition (Notice the 600s timeout flag is critical)
-Invoke-RestMethod -Method Post -Uri http://20.230.85.3:8000/api/jewelry/recognize `
+# 1. Test Health
+Invoke-RestMethod -Method Get -Uri http://<SERVER_IP>:8000/health
+
+# 2. Test Step 1 (Invoice Parsing - requires multipart form construction)
+# (Best tested directly through the API Swagger UI at http://<SERVER_IP>:8000/docs)
+
+# 3. Test Step 2 (Item Enrichment)
+Invoke-RestMethod -Method Post -Uri http://<SERVER_IP>:8000/api/jewelry/recognize `
   -ContentType "application/json" `
   -TimeoutSec 600 `
-  -Body '{"brand":"Cartier","vendor_item_number":"CRN4817000","upc_code":"","source_url":""}' | ConvertTo-Json -Depth 10
-```
+  -Body '{"brand":"John Hardy","vendor_item_number":"254069","upc_code":"8254292540696","source_url":"","pre_filled_attributes":{"metal_type":"STSILVER","metal_color":"White","product_type":"Bracelets","center_stone_type":"Blue Sapphire"}}' | ConvertTo-Json -Depth 10
 
-## 8. Developer Checklist
-- [ ] Create `Jewelry AI Setup` table and page. Populate the API Endpoint URL.
-- [ ] Create `Jewelry Item Attribute` table with the exact 31 fields specified above.
-- [ ] Create List Pages for the Attribute table and add a FactBox on the `Item Card`.
-- [ ] Deploy the 3 Codeunits (`Mgmt`, `Job Queue`, `Action`).
-- [ ] Add the Action to the `Item Card` page extension.
-- [ ] Confirm the BC Server firewall allows outbound HTTP traffic to the Python API server.
-- [ ] Test via PowerShell from the BC Server first to rule out network issues.
-- [ ] Test via BC UI and confirm the user session does not freeze (thanks to Job Queues).
+  8. Developer Checklist
+ Create Jewelry AI Setup table and page. Populate the API Endpoint URL (http://<SERVER_IP>:8000).
+ Create Jewelry Item Attribute table with the exact 31 fields specified above.
+ Create List Pages for the Attribute table and add a FactBox on the Item Card.
+ Deploy Jewelry AI Mgmt. codeunit (handles both Step 1 PDF upload and Step 2 JSON enrichment).
+ Deploy the Jewelry AI Job Queue codeunit to handle long-running tasks in the background.
+ Confirm the BC Server firewall allows outbound HTTP traffic to the Python API server.
+ Test via PowerShell from the BC Server first to rule out network issues.
+ Test via BC UI and confirm the user session does not freeze (thanks to Job Queues).
