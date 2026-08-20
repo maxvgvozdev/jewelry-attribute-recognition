@@ -12,12 +12,14 @@ API Endpoints:
 
 Step 1: POST http://<SERVER_IP>:8000/api/invoice/parse
 Step 2: POST http://<SERVER_IP>:8000/api/jewelry/recognize
+
 2. Prerequisites
 Network Access: The BC Server must be able to reach the Python API server on port 8000.
 Error Handling: The API returns standard HTTP status codes:
 200 OK: Success.
 404 Not Found: Search failed to find the item. (BC should log this or prompt the user for a direct source_url).
 500 Internal Server Error: Vision AI, Firecrawl, or network failure.
+
 3. Data Structure: The 31 Attributes Table
 Create a dedicated table to hold the exact 31 attributes returned by the API. This keeps the standard Item table clean and groups the jewelry-specific data logically.
 
