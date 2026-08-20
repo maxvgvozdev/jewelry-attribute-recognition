@@ -341,37 +341,58 @@ Shape:
 def _render_pdf_to_images(file_path: str, dpi: int = 150) -> List[str]:
     """
     Converts PDF pages to base64 encoded JPEGs for Vision AI.
-    Filters out pages that look like legal text/return policies to save AI processing time.
+    Strictly filters out Terms & Conditions / legal pages to prevent Vision AI timeouts.
+    Limits to a maximum of 2 relevant pages.
     """
     doc = fitz.open(file_path)
     images_b64 = []
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
     
-    # Regex to find price patterns (e.g., 123.45) or invoice keywords
-    price_pattern = re.compile(r'\d+\.\d{2}')
-    keyword_pattern = re.compile(r'(qty|price|amount|total|description|sku|item\s*no|extended)', re.IGNORECASE)
+    # Regex to find actual price patterns (e.g., $123.45 or 123.45)
+    price_pattern = re.compile(r'\$\s*\d+\.\d{2}|\d+\.\d{2}')
+    # Regex to find strict legal/T&C keywords
+    legal_pattern = re.compile(r'(terms\s*&\s*conditions|warranty|governing law|liability|force majeure|intellectual property rights|return of non-defective)', re.IGNORECASE)
 
     for page in doc:
         text = page.get_text("text")
         
-        # Count how many price patterns and keywords are on the page
-        price_matches = len(price_pattern.findall(text))
-        keyword_matches = len(keyword_pattern.findall(text))
-        
-        # If the page has text, but almost no prices/keywords, assume it's a legal page and skip it.
-        # If it has NO text (meaning it's a scanned image), we must include it.
-        if text.strip() and price_matches < 2 and keyword_matches < 2:
-            logger.info(f"Skipping page {page.number + 1} (likely non-item/legal page).")
-            continue
+        # If the page has text, analyze it
+        if text.strip():
+            # 1. If it looks like a legal page, skip it immediately
+            if legal_pattern.search(text):
+                logger.info(f"Skipping page {page.number + 1} (detected Terms & Conditions / legal text).")
+                continue
+                
+            # 2. If it doesn't have at least 2 price numbers, skip it
+            price_matches = len(price_pattern.findall(text))
+            if price_matches < 2:
+                logger.info(f"Skipping page {page.number + 1} (no item prices detected).")
+                continue
 
-        # Render to image and convert to base64
+        # If we didn't skip it, render it to an image
         pix = page.get_pixmap(matrix=mat)
         img_bytes = pix.tobytes("jpeg")
         b64 = base64.b64encode(img_bytes).decode("utf-8")
         images_b64.append(b64)
         
+        # SAFETY VALVE: Stop after collecting 2 valid pages to prevent Vision AI timeouts
+        if len(images_b64) >= 2:
+            logger.info("Reached 2 page limit for Vision AI. Stopping page extraction.")
+            break
+        
     doc.close()
+    
+    # If the PDF had NO extractable text (meaning it's a pure scanned image PDF), 
+    # just grab the first 2 pages blindly.
+    if not images_b64 and len(doc) > 0:
+        for i in range(min(2, len(doc))):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("jpeg")
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            images_b64.append(b64)
+            
     return images_b64
 
 def _ask_vision_llm_for_invoice(images_b64: List[str]) -> Dict[str, Any]:
@@ -398,7 +419,7 @@ def _ask_vision_llm_for_invoice(images_b64: List[str]) -> Dict[str, Any]:
     
     url = f"{VISION_API_URL}/api/chat"
     logger.info(f"Sending {len(images_b64)} invoice page(s) to {INVOICE_VISION_MODEL} on spark...")
-    resp = requests.post(url, json=payload, timeout=300) # Invoices take longer
+    resp = requests.post(url, json=payload, timeout=600) # Invoices take longer
     resp.raise_for_status()
     
     data = resp.json()
