@@ -153,6 +153,7 @@ class InvoiceLineItem(BaseModel):
     sku: Optional[str] = None
     sku_alternate: Optional[str] = None
     description: Optional[str] = None
+    brand: Optional[str] = None  # <--- ADDED BRAND
     qty: Optional[float] = None
     unit: Optional[str] = None
     weight: Optional[float] = None
@@ -316,6 +317,7 @@ For each purchased product line item, extract:
 - sku: Vendor product identifier (Article, Item, Style, SKU). Do not use PO/SO/Tracking numbers.
 - sku_alternate: Second product code linked to the same line (e.g., packing-list code). Null if absent.
 - description: Clean product description. Normalize line breaks to spaces.
+- brand: The specific brand or manufacturer of the item (e.g., Herco, David Yurman, Cartier). Infer from the description if necessary. Null if not present.
 - qty: Numeric quantity. Null if missing.
 - unit: Unit of measure (PC, GM, EA). Null if absent.
 - weight: Numeric line weight. Null if absent.
@@ -331,22 +333,44 @@ Shape:
 {
   "vendor_name": null, "invoice_number": null, "invoice_date": null, "currency": null,
   "line_items": [
-    {"sku": null, "sku_alternate": null, "description": null, "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
+    {"sku": null, "sku_alternate": null, "description": null, "brand": null, "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
   ],
   "subtotal": null, "freight": null, "total": null, "needs_review": false, "review_reason": null
 }"""
 
-def _render_pdf_to_images(file_path: str, dpi: int = 220) -> List[str]:
-    """Converts PDF pages to base64 encoded JPEGs for Vision AI."""
+def _render_pdf_to_images(file_path: str, dpi: int = 150) -> List[str]:
+    """
+    Converts PDF pages to base64 encoded JPEGs for Vision AI.
+    Filters out pages that look like legal text/return policies to save AI processing time.
+    """
     doc = fitz.open(file_path)
     images_b64 = []
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
+    
+    # Regex to find price patterns (e.g., 123.45) or invoice keywords
+    price_pattern = re.compile(r'\d+\.\d{2}')
+    keyword_pattern = re.compile(r'(qty|price|amount|total|description|sku|item\s*no|extended)', re.IGNORECASE)
+
     for page in doc:
+        text = page.get_text("text")
+        
+        # Count how many price patterns and keywords are on the page
+        price_matches = len(price_pattern.findall(text))
+        keyword_matches = len(keyword_pattern.findall(text))
+        
+        # If the page has text, but almost no prices/keywords, assume it's a legal page and skip it.
+        # If it has NO text (meaning it's a scanned image), we must include it.
+        if text.strip() and price_matches < 2 and keyword_matches < 2:
+            logger.info(f"Skipping page {page.number + 1} (likely non-item/legal page).")
+            continue
+
+        # Render to image and convert to base64
         pix = page.get_pixmap(matrix=mat)
         img_bytes = pix.tobytes("jpeg")
         b64 = base64.b64encode(img_bytes).decode("utf-8")
         images_b64.append(b64)
+        
     doc.close()
     return images_b64
 
