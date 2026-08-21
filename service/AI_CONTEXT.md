@@ -1,25 +1,31 @@
 Project Context: Jewelry Attribute Recognition API
-1. Overview
-Goal: A FastAPI-based service that extracts 31 specific jewelry attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models to analyze product images and text.
+1. How to Transfer Context to a New Chat
+To resume work on this project in a new AI chat (without losing state), paste this AI_CONTEXT.md file first. Then, paste the contents of the following files from your GitHub repository:
+
+service/api.py (Main FastAPI application, Pydantic models, PDF parsing, BC365 strict validation logic).
+service/firecrawl_proxy.py (Standalone script for Firecrawl V2 web search/scraping).
+service/vision_client.py (Client for communicating with Spark AI / Ollama).
+service/config.py (Vision AI extraction prompt).
+service/requirements.txt (Python dependencies).
+deploy.ps1 (PowerShell deployment script for Windows Server 2025).
+(Optional) Your AL files: JewelryRecognitionClient.Codeunit.al and Jewelry Item Attribute.Table.al.
+Prompt to use in the new chat: "Here is my AI_CONTEXT.md file and the associated project code. Read this to understand our project state. Do not write any code yet, just acknowledge."
+
+2. Overview
+Goal: A FastAPI-based service that extracts 31 specific jewelry attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models (Ollama) to analyze product images and text.
 Target Stack: Python 3, FastAPI, Uvicorn, PyMuPDF, Pillow, Firecrawl API, Ollama (remote Vision AI on "Spark").
 Deployment: Code is modified on a laptop in VS Code, pushed to GitHub, and deployed on a Windows Server 2025 via a PowerShell script (deploy.ps1) that pulls code and restarts a Scheduled Task.
-2. Business Workflow (BC Integration)
+3. Business Workflow (BC Integration)
 This service operates in a 2-step workflow orchestrated by Microsoft Business Central:
 
 STEP 1: Invoice Parsing (POST /api/invoice/parse)
 Input: BC sends a vendor invoice PDF file.
-Action: Service converts PDF to images (PyMuPDF) and sends to local Spark AI (qwen3-vl:32b-32k via Ollama).
+Action: Service converts PDF to images (PyMuPDF) and sends to local Spark AI (qwen3-vl:32b-32k via Ollama at 100.88.93.128:11434).
 Output (JSON): Extracts Vendor Name, Invoice No, Date, and Line Items (SKU, Alternate SKU, Description, Brand, Qty, Unit, Price, and pre-filled Jewelry Attributes).
 STEP 2: Item Enrichment (POST /api/jewelry/recognize)
 Input: BC sends the Item Number, Brand, preferred source_url (if found), and the pre_filled_attributes distilled from Step 1.
 Action: Service uses Firecrawl to scrape the source_url (or searches if URL is missing), downloads product images, and sends them to Vision AI.
 Output (JSON): Fills in any missing attributes that were not found in the invoice text, combining both invoice and web/image data to return the final complete 31-attribute JSON to BC.
-3. Architecture & File Structure
-api.py: Main FastAPI application. Orchestrates the workflow, defines Pydantic models for BC365, handles PDF parsing, and enforces strict BC365 master data validation.
-firecrawl_proxy.py: Standalone Python script run as a subprocess. Queries Firecrawl V2 to search for jewelry products by brand/SKU and scrape text/images.
-vision_client.py: Client to communicate with the remote Vision AI server (Ollama, OpenAI-style, or generic). Compresses images to base64 before sending.
-config.py: Stores the strict GIA-to-BC365 extraction prompt used for the Vision AI.
-requirements.txt: Python dependencies.
 4. Key Logic & Business Rules
 31 BC365 Attributes: The system extracts exactly 31 fields (metal_type, center_stone_shape, necklace_type, etc.).
 Strict Validation (VALID_BC365_OPTIONS): The AI's output is forced to match exact BC365 master data strings. It uses case-insensitive exact matching, then falls back to the longest substring match. If no match, returns null.
@@ -44,7 +50,9 @@ When modifying API endpoints, ensure the Pydantic models match the expected BC36
 Preserve the _normalize_to_bc365 strict matching logic.
 Ensure firecrawl_proxy.py remains a standalone script executed via subprocess.run.
 Remember the 2-step Business Workflow: Step 1 (Invoice) feeds pre-filled attributes to Step 2 (Enrichment).
+When writing AL code for Business Central, always use HttpClient.Timeout(600000) because Vision AI takes longer than BC's default 100s timeout.
 7. Current State & Progress
-Step 1 (Invoice Parsing) is FULLY WORKING and TESTED. Successfully tested with John Hardy and Quality Gold PDFs. Correctly extracts Brand, SKU, Prices, and pre-fills basic attributes (metal_type, product_type, center_stone_type).
-Step 2 (Item Enrichment) code is functional but has not been explicitly tested in this session yet.
+Step 1 (Invoice Parsing) is FULLY WORKING and TESTED. Successfully tested with John Hardy and Quality Gold PDFs. Correctly extracts Brand, SKU, Prices, and pre-fills basic attributes (metal_type, product_type, center_stone_type). Smart T&C filtering prevents AI timeouts.
+Step 2 (Item Enrichment) is FULLY WORKING and TESTED. Successfully tested with John Hardy item. Firecrawl finds images, Vision AI fills missing attributes.
+BC Integration AL Code is FINALIZED. AL codeunit includes Step 1 (PDF Multipart upload) and Step 2 (JSON Enrichment with PreFilledAttributes). Background Job Queue architecture is documented to prevent BC UI timeouts.
 Windows Service wrapper is present but currently disabled in favor of Task Scheduler (python.exe api.py).
