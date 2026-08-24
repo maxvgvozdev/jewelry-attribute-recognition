@@ -36,7 +36,7 @@ logger = logging.getLogger("jewelry.vision")
 
 VISION_API_URL = os.getenv("VISION_API_URL", "http://localhost:11434").rstrip("/")
 VISION_API_KEY = os.getenv("VISION_API_KEY", "")
-VISION_MODEL = os.getenv("VISION_MODEL", "llava")
+VISION_MODEL = os.getenv("VISION_MODEL", "default:latest")
 VISION_PROVIDER = os.getenv("VISION_PROVIDER", "ollama").lower()
 
 

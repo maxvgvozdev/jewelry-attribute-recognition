@@ -306,7 +306,7 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
 import fitz  # PyMuPDF
 import base64
 
-INVOICE_VISION_MODEL = os.getenv("INVOICE_VISION_MODEL", "qwen3-vl:32b-32k")
+INVOICE_VISION_MODEL = os.getenv("INVOICE_VISION_MODEL", "default:latest")
 
 INVOICE_VISION_PROMPT = """You are a precise invoice data extraction engine.
 You will receive one or more scanned invoice page images. Read only what is visually present.
