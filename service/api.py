@@ -1017,9 +1017,10 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
 
     combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
     
-    # THIS IS THE KEY CHANGE: We pass the pre_filled_attrs down to the builder
+    # FIX: Pass only `page_text` to the heuristic builder, NOT `combined_text`.
+    # If we pass combined_text, the JSON keys (e.g., "engagement_ring_type") trigger false keyword matches.
     attrs_dict = _build_attributes_from_text_and_vision(
-        brand, combined_text, vision_results, item_number or upc_code, pre_filled_attrs
+        brand, page_text, vision_results, item_number or upc_code, pre_filled_attrs
     )
 
     return {
