@@ -1,5 +1,5 @@
 """
-Jewelry Attribute Recognition API Service
+Jewelry & Watch Attribute Recognition API Service
 Integrates the jewelry-attribute-recognition skill with Microsoft Business Central
 via a REST API endpoint.
 
@@ -17,13 +17,13 @@ import subprocess
 import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from pydantic import BaseModel, Field, field_validator
 
 try:
@@ -34,27 +34,21 @@ except Exception:
 # Strict schema prompt for Vision AI to extract all 31 BC365 fields
 from config import VISION_EXTRACTION_PROMPT
 
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-from fastapi.responses import JSONResponse
-
-
-# --- UPGRADE EXISTING MODEL ---
+# Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
+# resolve correctly when launched by Task Scheduler.
+SKILL_ROOT = Path(__file__).resolve().parent.parent
+if str(SKILL_ROOT) not in sys.path:
+    sys.path.insert(0, str(SKILL_ROOT))
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVICE_NAME = "JewelryAgentAPI"
 SERVICE_DISPLAY_NAME = "Jewelry Attribute Recognition API"
-SERVICE_DESCRIPTION = "API service exposing jewelry attribute recognition to Microsoft Business Central"
+SERVICE_DESCRIPTION = "API service exposing jewelry & watch attribute recognition to Microsoft Business Central"
 
-SKILL_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS_DIR = SKILL_ROOT / "artifacts"
 FIRECRAWL_SCRIPT = SKILL_ROOT / "scripts" / "firecrawl_proxy.py"
-
-# Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
-# resolve correctly when launched by Task Scheduler.
-if str(SKILL_ROOT) not in sys.path:
-    sys.path.insert(0, str(SKILL_ROOT))
 
 # Ensure artifacts directory exists
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,7 +57,6 @@ ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 API_PORT = int(os.getenv("JEWELRY_API_PORT", "8000"))
 API_HOST = os.getenv("JEWELRY_API_HOST", "0.0.0.0")
 LOG_LEVEL = os.getenv("JEWELRY_API_LOG_LEVEL", "INFO")
-
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,11 +70,11 @@ handler.setFormatter(logging.Formatter(
 ))
 logger.addHandler(handler)
 
-
 # ---------------------------------------------------------------------------
 # Pydantic models (Business Central payload / response)
 # ---------------------------------------------------------------------------
 class JewelryRequest(BaseModel):
+    category: str = Field("jewelry", json_schema_extra={"examples": ["jewelry", "watch"]})
     brand: str = Field(..., json_schema_extra={"examples": ["David Yurman"]})
     vendor_item_number: str = Field("", json_schema_extra={"examples": ["B18729D88APRDIM"]})
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
@@ -96,23 +89,19 @@ class JewelryRequest(BaseModel):
         if v is None: return ""
         return str(v).strip()
 
-
 class ImageEvidence(BaseModel):
     url: str
     view_type: str
     alt_text: str
-
 
 class LookupInfo(BaseModel):
     vendor_item_number_used: bool = False
     upc_code_used: bool = False
     cross_confirmed: bool = False
 
-
 class ConfidenceInfo(BaseModel):
     overall: str = "medium"
     notes: List[str] = []
-
 
 class JewelryAttributes(BaseModel):
     metal_type: Optional[str]
@@ -147,20 +136,56 @@ class JewelryAttributes(BaseModel):
     clasp_type: Optional[str]
     earring_back: Optional[str]
 
+class WatchAttributes(BaseModel):
+    functions_complications: Optional[str]
+    watch_style: Optional[str]
+    movement_type: Optional[str]
+    display_type: Optional[str]
+    case_diameter: Optional[str]
+    case_thickness_mm: Optional[str]
+    case_shape: Optional[str]
+    dial_color: Optional[str]
+    case_back: Optional[str]
+    dial_motif: Optional[str]
+    watch_display_number_type: Optional[str]
+    dial_embellishment: Optional[str]
+    case_material: Optional[str]
+    strap_bracelet_type: Optional[str]
+    strap_bracelet_material: Optional[str]
+    case_color: Optional[str]
+    strap_color: Optional[str]
+    strap_secondary_color: Optional[str]
+    strap_bracelet_width_mm: Optional[str]
+    crystal_material: Optional[str]
+    special_functions: Optional[str]
+    power_reserve_hour: Optional[str]
+    water_resistance_m: Optional[str]
+    clasp_type: Optional[str]
+    watch_brand: Optional[str]
+    watch_collection: Optional[str]
+    bezel_type: Optional[str]
+    winding_crown: Optional[str]
+    calibre: Optional[str]
+    precision: Optional[str]
+    certification: Optional[str]
+    gender: Optional[str]
+    msrp_price: Optional[str]
+    year_produced: Optional[str]
+    limited_production: Optional[str]
+    watch_size: Optional[str]
+    treatment: Optional[str]
 
-# --- NEW MODELS FOR INVOICE PARSING (Vision AI Output) ---
 class InvoiceLineItem(BaseModel):
     sku: Optional[str] = None
     sku_alternate: Optional[str] = None
     description: Optional[str] = None
-    brand: Optional[str] = None  # <--- ADDED BRAND
+    brand: Optional[str] = None
     qty: Optional[float] = None
     unit: Optional[str] = None
     weight: Optional[float] = None
     unit_price: Optional[float] = None
     price: Optional[float] = None
     price_basis: Optional[str] = None
-    # NEW: Add normalized attributes here
     attributes: Optional[Dict[str, Any]] = None 
 
 class InvoiceResponse(BaseModel):
@@ -175,24 +200,13 @@ class InvoiceResponse(BaseModel):
     needs_review: bool = False
     review_reason: Optional[str] = None
 
-class JewelryResponse(BaseModel):
-    item: Dict[str, Any]
-    evidence: Dict[str, Any]
-    attributes: JewelryAttributes
-    lookup: LookupInfo
-    confidence: ConfidenceInfo
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 def _firecrawl_available() -> bool:
     return FIRECRAWL_SCRIPT.exists() and FIRECRAWL_SCRIPT.is_file()
 
-
 def _run_firecrawl_search(query: str) -> Dict[str, Any]:
-    """Run the bundled Firecrawl proxy search and return parsed JSON."""
     if not FIRECRAWL_SCRIPT.exists():
         raise RuntimeError(f"Firecrawl proxy script not found: {FIRECRAWL_SCRIPT}")
     try:
@@ -211,7 +225,6 @@ def _run_firecrawl_search(query: str) -> Dict[str, Any]:
         raise RuntimeError(f"Search failed: {exc}")
 
 def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
-    """Directly scrape a URL using the Firecrawl proxy script."""
     if not FIRECRAWL_SCRIPT.exists():
         raise RuntimeError(f"Firecrawl proxy script not found: {FIRECRAWL_SCRIPT}")
     try:
@@ -227,9 +240,8 @@ def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
         return json.loads(result.stdout)
     except Exception as exc:
         raise RuntimeError(f"Scrape failed: {exc}")
-    
+
 def _check_upc(upc_code: str) -> Dict[str, Any]:
-    """Check UPC on upcitemdb.com. Returns parsed metadata or empty dict."""
     if not upc_code:
         return {}
     url = f"https://www.upcitemdb.com/upc/{upc_code}"
@@ -246,18 +258,14 @@ def _check_upc(upc_code: str) -> Dict[str, Any]:
         logger.warning("UPC check failed: %s", exc)
         return {"found": False, "error": str(exc), "url": url}
 
-
 def _download_image(url: str, dest: Path, referer: str = "") -> str:
-    """Download image to artifacts dir; return absolute path."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        # Bypass hotlink protection (CDN 403s) by pretending to be the brand's own webpage
         if referer:
             headers["Referer"] = referer
             
-        # CRITICAL FIX: Use tuple (connect_timeout, read_timeout).
         resp = requests.get(url, timeout=(10, 30), headers=headers, stream=True)
         resp.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -270,19 +278,14 @@ def _download_image(url: str, dest: Path, referer: str = "") -> str:
         logger.error("Image download failed: %s -> %s", url, exc)
         raise
 
-
 def _analyze_image(image_path: str, question: str) -> Dict[str, Any]:
-    """Delegate to the local vision client."""
     from service.vision_client import analyze_image
     return analyze_image(image_path, question)
 
-
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    """Extracts a JSON object from text, even if surrounded by reasoning or markdown."""
     if not text:
         return None
         
-    # 1. Try to find a JSON code block ```json ... ```
     json_block_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
     if json_block_match:
         try:
@@ -290,7 +293,6 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError:
             pass
 
-    # 2. Fallback: Find the first '{' and the very last '}' in the entire text.
     first_brace = text.find('{')
     last_brace = text.rfind('}')
     
@@ -339,52 +341,37 @@ Shape:
 }"""
 
 def _render_pdf_to_images(file_path: str, dpi: int = 150) -> List[str]:
-    """
-    Converts PDF pages to base64 encoded JPEGs for Vision AI.
-    Strictly filters out Terms & Conditions / legal pages to prevent Vision AI timeouts.
-    Limits to a maximum of 2 relevant pages.
-    """
     doc = fitz.open(file_path)
     images_b64 = []
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
     
-    # Regex to find actual price patterns (e.g., $123.45 or 123.45)
     price_pattern = re.compile(r'\$\s*\d+\.\d{2}|\d+\.\d{2}')
-    # Regex to find strict legal/T&C keywords
     legal_pattern = re.compile(r'(terms\s*&\s*conditions|warranty|governing law|liability|force majeure|intellectual property rights|return of non-defective)', re.IGNORECASE)
 
     for page in doc:
         text = page.get_text("text")
         
-        # If the page has text, analyze it
         if text.strip():
-            # 1. If it looks like a legal page, skip it immediately
             if legal_pattern.search(text):
                 logger.info(f"Skipping page {page.number + 1} (detected Terms & Conditions / legal text).")
                 continue
-                
-            # 2. If it doesn't have at least 2 price numbers, skip it
             price_matches = len(price_pattern.findall(text))
             if price_matches < 2:
                 logger.info(f"Skipping page {page.number + 1} (no item prices detected).")
                 continue
 
-        # If we didn't skip it, render it to an image
         pix = page.get_pixmap(matrix=mat)
         img_bytes = pix.tobytes("jpeg")
         b64 = base64.b64encode(img_bytes).decode("utf-8")
         images_b64.append(b64)
         
-        # SAFETY VALVE: Stop after collecting 2 valid pages to prevent Vision AI timeouts
         if len(images_b64) >= 2:
             logger.info("Reached 2 page limit for Vision AI. Stopping page extraction.")
             break
         
     doc.close()
     
-    # If the PDF had NO extractable text (meaning it's a pure scanned image PDF), 
-    # just grab the first 2 pages blindly.
     if not images_b64 and len(doc) > 0:
         for i in range(min(2, len(doc))):
             page = doc[i]
@@ -396,7 +383,6 @@ def _render_pdf_to_images(file_path: str, dpi: int = 150) -> List[str]:
     return images_b64
 
 def _ask_vision_llm_for_invoice(images_b64: List[str]) -> Dict[str, Any]:
-    """Sends multiple images to qwen3-vl on spark via Ollama."""
     from service.vision_client import VISION_API_URL
     
     payload = {
@@ -419,7 +405,7 @@ def _ask_vision_llm_for_invoice(images_b64: List[str]) -> Dict[str, Any]:
     
     url = f"{VISION_API_URL}/api/chat"
     logger.info(f"Sending {len(images_b64)} invoice page(s) to {INVOICE_VISION_MODEL} on spark...")
-    resp = requests.post(url, json=payload, timeout=600) # Invoices take longer
+    resp = requests.post(url, json=payload, timeout=600) 
     resp.raise_for_status()
     
     data = resp.json()
@@ -697,8 +683,113 @@ VALID_BC365_OPTIONS: Dict[str, set] = {
     }
 }
 
+# --- NEW WATCH SCHEMA OPTIONS ---
+VALID_BC365_WATCH_OPTIONS: Dict[str, set] = {
+    "functions_complications": {
+        "Date", "Day", "Centre Hour", "Instantaneous Date", "Minute and Second Hand", 
+        "Stop-seconds for precise time setting", "Power Reserve", "Month", "Moon Phase", 
+        "Second Hand", "Chronograph", "Chronometer", "minute repeater", 
+        "perpetual calendar", "alarm", "split chronometer", "annual calendar", 
+        "tourbillon", "GMT", "World Time"
+    },
+    "watch_style": {"Casual", "Dress", "Fashion", "Luxury", "Sport", "Diver", "Pocket"},
+    "movement_type": {
+        "Automatic", "Hand", "Quartz", "Manual", "Spring Drive", "Self Winding", 
+        "Solar", "Eco-Drive", "Mechanical/Manual", "Automatic AND Manual", "Automatic/Self Winding"
+    },
+    "display_type": {"Analog", "Analog/Digital", "Digital", "LED", "1 Subdial", "2 Subdial", "3 Subdial"},
+    "case_shape": {"Heart", "Oval", "Rectangular", "Round", "Square", "Tonneau", "Triangular", "Cushion", "Other"},
+    "dial_color": {
+        "Beige", "Black", "Blue", "Blue/Black", "Blue/Red", "Brown", "Burgundy", 
+        "Champagne", "Chocolate/Black", "Gold", "Gray", "Green", "Ivory", "Maroon", 
+        "Not Applicable", "Navy Blue", "Onyx", "Orange", "Pink", "Purple", "Red", 
+        "Rose Gold", "Silver", "Turquoise", "Violet", "White", "Yellow", "Yellow Gold", 
+        "Slate", "Red Grape", "Black Mother of Pearl", "BlueMother of Pearl", "Cream", 
+        "Golden", "Grey Mother of Pearl", "Multi Color", "Pink Mother of Pearl", 
+        "Skeleton", "White Mother of Pearl", "Diamond", "Reverso"
+    },
+    "case_back": {"Closed", "Open", "Skeleton"},
+    "dial_motif": {
+        "Celebration", "Eisenkiesel", "Floral", "Fluted", "Meteorite", "Mother Of Pearl", 
+        "Palm", "Pave Diamonds and Sapphires", "Pave Diamonds", "No Motf/Plain Color"
+    },
+    "watch_display_number_type": {
+        "A/Dot", "Arabic and Index", "Arabic and Roman", "Arabic", "Colored Stone/Crystal", 
+        "Diamond", "Diamond and Arabic", "Diamond and Dot", "Diamond and Index", 
+        "Diamond and Roman", "Digital", "Dot", "Dot and Index", "Index and Colored Stone/Crystal", 
+        "Index and Roman", "Index", "Roman and Colored Stone/Crystal", "Roman", "Dot and Roman"
+    },
+    "dial_embellishment": {"Crystal", "Diamonds", "Gemstone", "Glitter", "Pearl", "Rhinestone", "Stud"},
+    "case_material": {
+        "Gold 14K", "Gold 18K", "Platinum", "Silver", "Stainless Steel", "Rolesor 18 Carat", 
+        "Rolesium Platinum", "Titanium", "PVD", "Bronze", "Breitlight", "Ceramic", 
+        "Carbon Fiber", "Diamond Like Carbon", "Platinum and Stainless Steel", 
+        "Polymer/Plastic", "Rose Gold", "Rose Gold and Platinum", "Rose Gold and Stainless Steel", 
+        "Rose Tone", "Rose Tone and Stainless Steel", "Stainless Steel and Blue Tone", 
+        "Stainless Steel and Black PVD", "Stainless Steel and Brass", "Stainess Steel and Bronze", 
+        "Stainless Steeel and Black Tone", "Stainless Steel and Ceramic", 
+        "Stainless Steel and Carbon Fiber", "Stainless Steel and Titanium Coating", 
+        "Tungsten Carbide", "Tantalum", "White Gold Rhodium Plated", 
+        "White Gold Rhodium Plated and Platinum", "White Gold Rhodium Plated and Stainless Steel", 
+        "Yellow Gold", "Yellow Gold and Platinum", "Yellow Gold and Stainless Steel", 
+        "Yellow Tone", "Yellow Tone and Stainless Steel", "Ceratanium"
+    },
+    "strap_bracelet_type": {
+        "Bangle", "Bracelet", "Bracelet and Strap", "Cuff", "Strap", "Bracelet and 2 Straps", 
+        "Strap Set of 2", "Strap Set of 3", "Strap Set of 5"
+    },
+    "strap_bracelet_material": {
+        "Gold 14K", "Gold 18K", "Alligator Leather", "Platinum", "Leather", "Silver", 
+        "Stainless Steel", "Rolesor 18 Carat", "Rolesium Platinum", "Titanium", "Calfskin", 
+        "Sharkskin", "Ostrich", "Crocodile", "Elastomer", "Silicone", "Rubber", "Nylon", 
+        "Cloth", "Canvas", "Lizard", "Pig", "Kevlar", "Cordura", "Carbon Fiber", "Lamb Skin", 
+        "Ceramic", "Appleskin", "Fabric", "Fabric and Leather", "Grosgrain", 
+        "Leather and Nylon Set of 2", "Grain", "Microfiber", "PVD", "Satin", "Snakeskin", 
+        "Textile", "Vegan Leather", "Oysterflex", "cord", "Bronze", "Diamond Like Carbon", 
+        "Polymer/Plastic", "Rose Gold", "Rose Gold and Platinum", "Rose Gold and Stainless Steel", 
+        "Rose Tone", "Rose Tone and Ceramic", "Rose Tone and Stainless Steel", 
+        "Sterling Silver Plated Product", "Stainess Steel and Blue Tone", "Stainless Steel and Black PVD", 
+        "Stainless Steel and Brass", "Stainess Steel and Bronze", "Stainless Steel and Black Tone", 
+        "Stainless Steel and Ceramic", "Stainless Steel and Carbon Fiber", 
+        "Stainless Steel and Titanium Coating", "Tungsten Carbide", "Titanium", "Tantalum", 
+        "White Gold Rhodium Plated", "White Gold Rhodium Plated and Platinum", 
+        "White Gold Rhodium Plated and Stainless Steel", "Yellow Gold", "Yellow Gold and Platinum", 
+        "Yellow Gold and Stainless Steel", "Yellow Tone", "Yellow Tone and Stainless Steel"
+    },
+    "case_color": {
+        "Black", "Brown", "Red", "Rose", "White", "Yellow", "Yellow-White", "Blue", 
+        "Golden", "Gray", "Green", "Multi Colored", "Orange", "Pink", "Purple", "Rose-White"
+    },
+    "strap_color": {
+        "Black", "Brown", "Blue", "Red", "Rose", "White", "Yellow", "Golden", "Gray", 
+        "Green", "Multi Colored", "Orange", "Pink", "Purple"
+    },
+    "strap_secondary_color": {
+        "Black", "Blue", "Brown", "Cream", "Golden", "Gray", "Green", "Orange", "Pink", "Purple"
+    },
+    "crystal_material": {"Glass", "Plastic", "Sapphire", "Synthetics Sapphire"},
+    "special_functions": {
+        "Activity tracker", "Alarm", "Altimeter", "Back light", "Barometer", "Calculator", 
+        "Calendar", "Calories counter", "Camera", "Chronograph", "Compass", "Countdown", 
+        "Distance tracking", "Email", "GPS", "Heart rate monitor", "Lap timer", "Messages", 
+        "Multi time zone", "Music player", "Night light", "Pedometer", "Phone", "Pulse monitor", 
+        "Sleep monitor", "Social media", "Solar powered", "Stop watch", "Voice control", "Web search"
+    },
+    "clasp_type": {
+        "Butterfly Deployant", "Hidden Folding (Crown)", "Non-Closure", "Pin Buckle", 
+        "Sliding Buckle", "Velcro Strap"
+    },
+    "bezel_type": {
+        "Compass", "Countdown", "Count Up", "Diamond", "Fluted", "GMT", "Pattern", "Plain", 
+        "Rolex Ring Command", "Slide rule", "Tachymeter", "Ceramic", "Numbered"
+    },
+    "winding_crown": {"Domed", "Triplock", "Twinlock"},
+    "gender": {"Baby", "Gents", "Ladies", "Unisex"},
+    "limited_production": {"Yes", "No"},
+    "watch_size": {"L", "M", "S", "XL", "XS", "mini"}
+}
 
-def _normalize_to_bc365(field: str, raw_value: Any) -> Optional[str]:
+def _normalize_to_bc365(field: str, raw_value: Any, category: str = "jewelry") -> Optional[str]:
     """
     Forces a raw extracted string to match the EXACT valid BC365 Master Data option.
     Uses case-insensitive exact matching, then longest-substring fallback for synonyms.
@@ -706,9 +797,15 @@ def _normalize_to_bc365(field: str, raw_value: Any) -> Optional[str]:
     if not raw_value or not isinstance(raw_value, str):
         return None
         
-    valid_options = VALID_BC365_OPTIONS.get(field)
+    valid_options = set()
+    if category == "watch":
+        valid_options = VALID_BC365_WATCH_OPTIONS.get(field, set())
+    else:
+        valid_options = VALID_BC365_OPTIONS.get(field, set())
+        
     if not valid_options:
-        return None
+        # For text/numeric fields not in the strict sets (e.g. case_diameter, calibre)
+        return raw_value.strip()
         
     raw_clean = raw_value.strip()
     raw_lower = raw_clean.lower()
@@ -718,8 +815,7 @@ def _normalize_to_bc365(field: str, raw_value: Any) -> Optional[str]:
         if opt.lower() == raw_lower:
             return opt
             
-    # 2. Substring match (e.g. LLM says "Stud Earrings", we map it to "Stud")
-    # We pick the longest valid option that matches to avoid "White" matching when "18K White Gold" is better
+    # 2. Substring match
     best_match = None
     for opt in valid_options:
         opt_lower = opt.lower()
@@ -734,8 +830,15 @@ def _build_attributes_from_text_and_vision(
     text: str,
     vision_results: List[Dict[str, Any]],
     item_number: str,
-    pre_filled_attrs: Optional[Dict[str, Any]] = None
+    pre_filled_attrs: Optional[Dict[str, Any]] = None,
+    category: str = "jewelry"
 ) -> Dict[str, Any]:
+    
+    if category == "watch":
+        return _build_watch_attributes_from_text_and_vision(
+            brand, text, vision_results, item_number, pre_filled_attrs
+        )
+
     text_lower = (text or "").lower()
     
     # 1. Initialize all 31 fields as null
@@ -752,16 +855,13 @@ def _build_attributes_from_text_and_vision(
         "chain_type": None, "clasp_type": None, "earring_back": None,
     }
 
-    # =========================================================================
-    # STEP 0 (NEW): PRE-FILL FROM INVOICE
-    # If BC sent us data from the PDF, we lock it in immediately.
-    # =========================================================================
+    # STEP 0: PRE-FILL FROM INVOICE
     if pre_filled_attrs and isinstance(pre_filled_attrs, dict):
         for key, value in pre_filled_attrs.items():
             if key in attrs and value is not None:
-                attrs[key] = _normalize_to_bc365(key, str(value))
+                attrs[key] = _normalize_to_bc365(key, str(value), category)
 
-    # 2. Try to parse the JSON returned by the Vision AI
+    # 2. Parse JSON returned by the Vision AI
     for v_res in vision_results:
         analysis_text = v_res.get("analysis", "")
         if not analysis_text:
@@ -769,9 +869,8 @@ def _build_attributes_from_text_and_vision(
         vision_attrs = _extract_json_from_text(analysis_text)
         if vision_attrs and isinstance(vision_attrs, dict):
             for key, value in vision_attrs.items():
-                # CHANGED: Only update if the invoice DID NOT already provide it
                 if key in attrs and attrs[key] is None and value is not None:
-                    attrs[key] = _normalize_to_bc365(key, str(value))
+                    attrs[key] = _normalize_to_bc365(key, str(value), category)
 
     # -----------------------------------------------------------------------
     # 3. PRE-PROCESS: Normalize European Karats & Multilingual Terms
@@ -795,10 +894,8 @@ def _build_attributes_from_text_and_vision(
     if "taille baguette" in text_lower:
         text_lower = text_lower.replace("taille baguette", "baguette")
 
-    # -----------------------------------------------------------------------
     # 4. STONE EXTRACTION
-    # -----------------------------------------------------------------------
-    if attrs.get("center_stone_type") is None: # CHANGED: Only run if invoice didn't provide it
+    if attrs.get("center_stone_type") is None:
         mentioned_stones = []
         for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
             if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"): continue
@@ -815,32 +912,27 @@ def _build_attributes_from_text_and_vision(
             if len(mentioned_stones) > 1 and "Diamond" in mentioned_stones:
                 if "with diamond" in text_lower or "and diamond" in text_lower:
                     for s in mentioned_stones:
-                        if s != "Diamond": attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s); break
-                else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
-            else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone)
+                        if s != "Diamond": attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", s, category); break
+                else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone, category)
+            else: attrs["center_stone_type"] = _normalize_to_bc365("center_stone_type", first_stone, category)
 
-    if attrs.get("side_stone_1_type") is None: # CHANGED
+    if attrs.get("side_stone_1_type") is None:
         if ("paved" in text_lower or "pave" in text_lower or "halo" in text_lower) and attrs.get("center_stone_type") == "Diamond":
             attrs["side_stone_1_type"] = "Diamond"
         else:
             for stone in VALID_BC365_OPTIONS.get("center_stone_type", set()):
                 if stone.lower() in ("other gemstones", "no stone", "enamel", "glass", "resin (plastic)"): continue
                 if stone.lower() in text_lower and stone != attrs.get("center_stone_type"):
-                    attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", stone); break
+                    attrs["side_stone_1_type"] = _normalize_to_bc365("side_stone_1_type", stone, category); break
 
-    # -----------------------------------------------------------------------
     # 5. COLOR & SHAPE EXTRACTION
-    # -----------------------------------------------------------------------
-    if attrs.get("stone_primary_color") is None and "diamond" in text_lower: # CHANGED
-        attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "White")
-    if attrs.get("center_stone_shape") is None and "round" in text_lower: # CHANGED
-        attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round")
+    if attrs.get("stone_primary_color") is None and "diamond" in text_lower:
+        attrs["stone_primary_color"] = _normalize_to_bc365("stone_primary_color", "White", category)
+    if attrs.get("center_stone_shape") is None and "round" in text_lower:
+        attrs["center_stone_shape"] = _normalize_to_bc365("center_stone_shape", "Round", category)
 
-        # -----------------------------------------------------------------------
-    # 6. MATERIAL & CATEGORY OVERRIDES (Strictly mapped to BC365 Master Data)
-    # -----------------------------------------------------------------------
+    # 6. MATERIAL & CATEGORY OVERRIDES
     if attrs.get("metal_type") is None:
-        # Platinum & Silver
         if "platinum" in text_lower or "950" in text_lower:
             attrs["metal_type"] = "950PL"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "White"
@@ -850,8 +942,6 @@ def _build_attributes_from_text_and_vision(
         elif "stainless steel" in text_lower or "steel" in text_lower:
             attrs["metal_type"] = "STSTEEL"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "GREY"
-            
-        # 18K Gold (Separated into Type and Color)
         elif "18k rose" in text_lower or "18kt rose" in text_lower:
             attrs["metal_type"] = "18K"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "Rose"
@@ -861,8 +951,6 @@ def _build_attributes_from_text_and_vision(
         elif "18k yellow" in text_lower or "18kt yellow" in text_lower or "18k" in text_lower:
             attrs["metal_type"] = "18K"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "Yellow"
-            
-        # 14K Gold (Separated into Type and Color)
         elif "14k rose" in text_lower or "14kt rose" in text_lower:
             attrs["metal_type"] = "14K"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "Rose"
@@ -873,20 +961,68 @@ def _build_attributes_from_text_and_vision(
             attrs["metal_type"] = "14K"
             if attrs.get("metal_color") is None: attrs["metal_color"] = "Yellow"
 
-    if attrs.get("product_type") is None: # CHANGED
-        if "solitaire" in text_lower and "diamond" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
-        elif "engagement" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings")
-        elif "earring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings")
-        elif "necklace" in text_lower or "pendant" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces")
-        elif "bracelet" in text_lower or "bangle" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets")
-        elif "wedding band" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands")
-        elif "ring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings")
+    if attrs.get("product_type") is None:
+        if "solitaire" in text_lower and "diamond" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings", category)
+        elif "engagement" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Engagement Rings", category)
+        elif "earring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Earrings", category)
+        elif "necklace" in text_lower or "pendant" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Necklaces", category)
+        elif "bracelet" in text_lower or "bangle" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Bracelets", category)
+        elif "wedding band" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Wedding Bands", category)
+        elif "ring" in text_lower: attrs["product_type"] = _normalize_to_bc365("product_type", "Fashion Rings", category)
 
-    if attrs.get("engagement_ring_type") is None and "solitaire" in text_lower: # CHANGED
-        attrs["engagement_ring_type"] = _normalize_to_bc365("engagement_ring_type", "Solitaire")
+    if attrs.get("engagement_ring_type") is None and "solitaire" in text_lower:
+        attrs["engagement_ring_type"] = _normalize_to_bc365("engagement_ring_type", "Solitaire", category)
         
-    if attrs.get("wedding_band_setting_type") is None and ("pavé" in text_lower or "pave" in text_lower or "paved" in text_lower): # CHANGED
-        attrs["wedding_band_setting_type"] = _normalize_to_bc365("wedding_band_setting_type", "Pave")
+    if attrs.get("wedding_band_setting_type") is None and ("pavé" in text_lower or "pave" in text_lower or "paved" in text_lower):
+        attrs["wedding_band_setting_type"] = _normalize_to_bc365("wedding_band_setting_type", "Pave", category)
+
+    return attrs
+
+
+def _build_watch_attributes_from_text_and_vision(
+    brand: str,
+    text: str,
+    vision_results: List[Dict[str, Any]],
+    item_number: str,
+    pre_filled_attrs: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    
+    text_lower = (text or "").lower()
+    
+    # 1. Initialize all 40+ watch fields as null
+    attrs = {
+        "functions_complications": None, "watch_style": None, "movement_type": None,
+        "display_type": None, "case_diameter": None, "case_thickness_mm": None,
+        "case_shape": None, "dial_color": None, "case_back": None, "dial_motif": None,
+        "watch_display_number_type": None, "dial_embellishment": None, "case_material": None,
+        "strap_bracelet_type": None, "strap_bracelet_material": None, "case_color": None,
+        "strap_color": None, "strap_secondary_color": None, "strap_bracelet_width_mm": None,
+        "crystal_material": None, "special_functions": None, "power_reserve_hour": None,
+        "water_resistance_m": None, "clasp_type": None, "watch_brand": None,
+        "watch_collection": None, "bezel_type": None, "winding_crown": None,
+        "calibre": None, "precision": None, "certification": None, "gender": None,
+        "msrp_price": None, "year_produced": None, "limited_production": None,
+        "watch_size": None, "treatment": None
+    }
+
+    # STEP 0: PRE-FILL FROM INVOICE
+    if pre_filled_attrs and isinstance(pre_filled_attrs, dict):
+        for key, value in pre_filled_attrs.items():
+            if key in attrs and value is not None:
+                attrs[key] = _normalize_to_bc365(key, str(value), "watch")
+
+    # 2. Parse JSON returned by the Vision AI
+    # NOTE: We will update VISION_EXTRACTION_PROMPT to handle watches in the next step.
+    # For now, this securely maps whatever it sees into strict BC365 watch options.
+    for v_res in vision_results:
+        analysis_text = v_res.get("analysis", "")
+        if not analysis_text:
+            continue
+        vision_attrs = _extract_json_from_text(analysis_text)
+        if vision_attrs and isinstance(vision_attrs, dict):
+            for key, value in vision_attrs.items():
+                if key in attrs and attrs[key] is None and value is not None:
+                    attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
     return attrs
 
@@ -894,8 +1030,8 @@ def _build_attributes_from_text_and_vision(
 # ---------------------------------------------------------------------------
 # Workflow orchestration
 # ---------------------------------------------------------------------------
-
 def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    category = payload.category.lower()
     brand = payload.brand.strip()
     vendor_item_number = payload.vendor_item_number.strip()
     upc_code = payload.upc_code.strip()
@@ -917,7 +1053,6 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         else:
             confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
 
-    # SHORT-CIRCUIT: If BC provides a source_url, skip web search entirely
     if source_url:
         resolved_url = source_url
         confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
@@ -931,11 +1066,7 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
             
     image_urls = []
     
-    # SHORT-CIRCUIT: If BC provides a source_url, skip web search entirely
-    if source_url:
-        resolved_url = source_url
-        confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
-    else:
+    if not source_url:
         if vendor_item_number:
             search_query = f"{brand} {vendor_item_number}"
         elif upc_code:
@@ -1007,7 +1138,14 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         local_name = ARTIFACTS_DIR / f"svc_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.jpg"
         try:
             local_path = _download_image(img_url, local_name, referer=resolved_url)
-            vision = _analyze_image(local_path, VISION_EXTRACTION_PROMPT)
+            
+            # Route prompt based on category
+            prompt = VISION_EXTRACTION_PROMPT # Placeholder, will update config.py next
+            if category == "watch":
+                # Temporary inline prompt until we update config.py
+                prompt = "Extract watch attributes: brand, case_material, dial_color, strap_material, movement_type. Return JSON."
+                
+            vision = _analyze_image(local_path, prompt)
             vision_results.append(vision)
             images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
         except Exception as exc:
@@ -1017,14 +1155,12 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
 
     combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
     
-    # FIX: Pass only `page_text` to the heuristic builder, NOT `combined_text`.
-    # If we pass combined_text, the JSON keys (e.g., "engagement_ring_type") trigger false keyword matches.
     attrs_dict = _build_attributes_from_text_and_vision(
-        brand, page_text, vision_results, item_number or upc_code, pre_filled_attrs
+        brand, page_text, vision_results, item_number or upc_code, pre_filled_attrs, category
     )
 
     return {
-        "item": {"brand": brand, "vendor_item_number": vendor_item_number, "upc_code": upc_code, "source_url": source_url, "resolved_item_url": resolved_url},
+        "item": {"brand": brand, "vendor_item_number": vendor_item_number, "upc_code": upc_code, "source_url": source_url, "resolved_item_url": resolved_url, "category": category},
         "evidence": {"images": [img.dict() for img in images], "text": combined_text[:2000]},
         "attributes": attrs_dict,
         "lookup": lookup.dict(),
@@ -1035,17 +1171,16 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
 # ---------------------------------------------------------------------------
 # FastAPI application
 # ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Jewelry Agent API starting up on %s:%s", API_HOST, API_PORT)
+    logger.info("Jewelry & Watch Agent API starting up on %s:%s", API_HOST, API_PORT)
     yield
-    logger.info("Jewelry Agent API shutting down")
+    logger.info("Jewelry & Watch Agent API shutting down")
 
 app = FastAPI(
-    title="Jewelry Attribute Recognition API",
-    description="Exposes jewelry recognition workflow for Microsoft Business Central",
-    version="1.0.0",
+    title="Jewelry & Watch Attribute Recognition API",
+    description="Exposes jewelry & watch recognition workflow for Microsoft Business Central",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -1053,11 +1188,10 @@ app = FastAPI(
 async def health():
     return {"status": "ok", "service": SERVICE_NAME}
 
-@app.post("/api/jewelry/recognize", response_model=JewelryResponse)
+@app.post("/api/jewelry/recognize")
 def recognize(req: JewelryRequest):
-    logger.info("Received jewelry request: brand=%s, vendor=%s", req.brand, req.vendor_item_number)
+    logger.info("Received item request: category=%s, brand=%s, vendor=%s", req.category, req.brand, req.vendor_item_number)
     try:
-        # We now pass the pre_filled_attributes from the request down to the workflow
         result = run_jewelry_workflow(req, req.pre_filled_attributes)
         return JSONResponse(content=result)
     except HTTPException:
@@ -1069,7 +1203,7 @@ def recognize(req: JewelryRequest):
 # ---------------------------------------------------------------------------
 # Invoice Prompt (For local LLM text extraction)
 # ---------------------------------------------------------------------------
-INVOICE_EXTRACTION_PROMPT = """You are an expert data entry clerk for a jewelry company. Analyze this invoice text and extract the data into a JSON object.
+INVOICE_EXTRACTION_PROMPT = """You are an expert data entry clerk for a jewelry/watch company. Analyze this invoice text and extract the data into a JSON object.
 
 RULES:
 1. Find the Vendor Name, Invoice Number, and Invoice Date.
@@ -1079,7 +1213,8 @@ RULES:
    - price (number, float)
    - description (the exact text describing the item)
    - brand (infer from context if not explicitly stated)
-   - attributes: Based ONLY on the item description text, extract jewelry attributes into this exact schema. If a value is not in the text, use null. Do not guess visual traits.
+   - category (either "jewelry" or "watch")
+   - attributes: Based ONLY on the item description text, extract jewelry or watch attributes into a generic JSON object. If a value is not in the text, use null. Do not guess visual traits.
    
 Return ONLY valid JSON matching this structure:
 {
@@ -1093,18 +1228,8 @@ Return ONLY valid JSON matching this structure:
       "price": 0.0,
       "description": "",
       "brand": "",
-      "attributes": {
-        "metal_type": null, "metal_color": null, "stone_primary_color": null,
-        "product_type": null, "gender": null, "center_stone_type": null,
-        "center_stone_shape": null, "side_stone_1_type": null, "side_stone_1_shape": null,
-        "side_stone_2_type": null, "side_stone_2_shape": null, "engagement_set_type": null,
-        "engagement_ring_type": null, "wedding_band_type": null, "wedding_band_setting_type": null,
-        "wedding_band_stone_continuity": null, "fashion_ring_type": null, "earring_type": null,
-        "necklace_type": null, "bracelet_type": null, "accessory_type": null,
-        "theme": null, "occasion": null, "jewelry_shape": null, "motif": null,
-        "finishing_type": null, "estate_period": null, "holiday_code": null,
-        "chain_type": null, "clasp_type": null, "earring_back": null
-      }
+      "category": "jewelry",
+      "attributes": {}
     }
   ]
 }"""
@@ -1112,26 +1237,14 @@ Return ONLY valid JSON matching this structure:
 from pdfminer.high_level import extract_text
 
 def _clean_ocr_text(text: str) -> str:
-    """
-    Strips out OCR garbage characters that crash LLMs.
-    (e.g., 'PSING69573' or 'lllll]lwwflgflzllillllflllllll Iliff’? E:I’;fifp‘:::;“e')
-    """
     if not text:
         return ""
-    
-    # Remove long strings of garbage characters (6+ consecutive non-vowel chars)
     text = re.sub(r'[^aeiouyAEIOUY]+', '', text)
-    
-    # Fix common OCR spacing errors (e.g., "6.5mm" -> "6.5 mm", "w/" -> " with ")
     text = re.sub(r'(\d)\s*([A-Za-z]+)\s+', r'\1 \2 ', text)
-    
-    # Collapse multiple spaces into a single space
     text = re.sub(r'\s+', ' ', text)
-    
     return text.strip()
 
 def _extract_text_from_pdf(file_path: str) -> str:
-    """Extracts text from a digital PDF. Returns empty string if the PDF is a scanned image."""
     try:
         from pdfminer.high_level import extract_text
         text = extract_text(file_path)
@@ -1140,7 +1253,6 @@ def _extract_text_from_pdf(file_path: str) -> str:
     except Exception as e:
         logger.warning(f"Pdfminer text extraction failed: {e}")
     
-    # If we get here, the PDF is a scanned image. We cannot do OCR here.
     logger.error("PDF contains no digital text (it is a scanned image). This API does not support image-based OCR.")
     raise HTTPException(
         status_code=422, 
@@ -1148,14 +1260,13 @@ def _extract_text_from_pdf(file_path: str) -> str:
     )
 
 def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
-    """Sends text to local Ollama for structured extraction."""
     from service.vision_client import VISION_API_URL, VISION_MODEL
     
     payload = {
-        "model": VISION_MODEL, # Reusing the same Ollama instance for text
+        "model": VISION_MODEL,
         "prompt": f"{prompt}\n\nINVOICE TEXT:\n{text}",
         "stream": False,
-        "options": {"temperature": 0.1} # Low temp for strict extraction
+        "options": {"temperature": 0.1}
     }
     
     resp = requests.post(f"{VISION_API_URL}/api/generate", json=payload, timeout=120)
@@ -1163,26 +1274,21 @@ def _ask_local_llm(prompt: str, text: str) -> Dict[str, Any]:
     raw = resp.json().get("response", "")
     return _extract_json_from_text(raw) or {}
 
-
 @app.post("/api/invoice/parse", response_model=InvoiceResponse)
 def parse_invoice(file: UploadFile = File(...)):
-    """Step 1: BC uploads a vendor invoice PDF. Service renders to images and uses Vision AI."""
     logger.info(f"Received invoice PDF: {file.filename}")
     
     temp_pdf = ARTIFACTS_DIR / f"inv_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.pdf"
     with open(temp_pdf, "wb") as f:
-        f.write(file.file.read()) # Note: file.file.read() for synchronous def
+        f.write(file.file.read())
         
     try:
-        # 1. Render PDF to images
         images_b64 = _render_pdf_to_images(str(temp_pdf))
         if not images_b64:
             raise HTTPException(status_code=400, detail="PDF contains 0 pages.")
             
-        # 2. Send to Vision AI
         llm_result = _ask_vision_llm_for_invoice(images_b64)
         
-        # --- NEW: Process descriptions to extract normalized BC365 attributes ---
         vendor_name = llm_result.get("vendor_name", "")
         raw_line_items = llm_result.get("line_items", [])
         
@@ -1190,17 +1296,17 @@ def parse_invoice(file: UploadFile = File(...)):
         for raw_item in raw_line_items:
             desc = raw_item.get("description") or ""
             sku = raw_item.get("sku") or ""
+            item_category = raw_item.get("category", "jewelry").lower()
             
-            # Run the text heuristics on the invoice description
             item_attrs = _build_attributes_from_text_and_vision(
                 brand=vendor_name,
                 text=desc,
-                vision_results=[], # No web images yet
+                vision_results=[],
                 item_number=sku,
-                pre_filled_attrs=None
+                pre_filled_attrs=None,
+                category=item_category
             )
             
-            # Attach the normalized attributes to the line item
             raw_item["attributes"] = item_attrs
             processed_items.append(InvoiceLineItem(**raw_item))
             
@@ -1221,19 +1327,11 @@ def parse_invoice(file: UploadFile = File(...)):
         logger.exception("Invoice parsing failed")
         raise HTTPException(status_code=500, detail=f"Invoice parsing failed: {e}")
     finally:
-        # Optional: clean up the temporary PDF to save space
         if temp_pdf.exists():
             temp_pdf.unlink()
 
 # ---------------------------------------------------------------------------
 # Windows Service wrapper
-# ---------------------------------------------------------------------------
-# NOTE: Currently disabled. We are using Task Scheduler running "python.exe api.py" instead
-# because the .venv pythonservice.exe had DLL registration issues on this server.
-# To re-enable: 
-#   1. Install pywin32 globally or fix the .venv pywin32_postinstall.py -install (as Admin)
-#   2. Change Task Scheduler action to use the .venv\pythonservice.exe
-#   3. Change this if __name__ block to: if len(sys.argv) > 1: win32serviceutil.HandleCommandLine(JewelryAPIService)
 # ---------------------------------------------------------------------------
 try:
     import win32serviceutil
@@ -1241,7 +1339,7 @@ try:
     import win32event
     import servicemanager
 except ImportError:
-    pass # pywin32 is not installed on this machine
+    pass 
 
 class JewelryAPIService(win32serviceutil.ServiceFramework):
     _svc_name_ = SERVICE_NAME
@@ -1299,6 +1397,5 @@ if __name__ == "__main__":
         try:
             win32serviceutil.HandleCommandLine(JewelryAPIService)
         except Exception:
-            # Fallback to standard uvicorn run if pywin32 is not installed
             import uvicorn
             uvicorn.run(app, host=API_HOST, port=API_PORT, log_level=LOG_LEVEL.lower())
