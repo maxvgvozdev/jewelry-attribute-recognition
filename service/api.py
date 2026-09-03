@@ -31,8 +31,8 @@ try:
 except Exception:
     _uvicorn = None
 
-# Strict schema prompt for Vision AI to extract all 31 BC365 fields
-from config import VISION_EXTRACTION_PROMPT
+# Strict schema prompts for Vision AI to extract BC365 fields
+from config import VISION_EXTRACTION_PROMPT, WATCH_VISION_EXTRACTION_PROMPT
 
 # Ensure repo root is on sys.path so package imports like `from service.vision_client import ...`
 # resolve correctly when launched by Task Scheduler.
@@ -80,7 +80,6 @@ class JewelryRequest(BaseModel):
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
     
-    # CRITICAL FIX: This field was missing, causing the 500 AttributeError
     pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice")
 
     @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
@@ -1012,8 +1011,6 @@ def _build_watch_attributes_from_text_and_vision(
                 attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
     # 2. Parse JSON returned by the Vision AI
-    # NOTE: We will update VISION_EXTRACTION_PROMPT to handle watches in the next step.
-    # For now, this securely maps whatever it sees into strict BC365 watch options.
     for v_res in vision_results:
         analysis_text = v_res.get("analysis", "")
         if not analysis_text:
@@ -1140,10 +1137,9 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
             local_path = _download_image(img_url, local_name, referer=resolved_url)
             
             # Route prompt based on category
-            prompt = VISION_EXTRACTION_PROMPT # Placeholder, will update config.py next
+            prompt = VISION_EXTRACTION_PROMPT
             if category == "watch":
-                # Temporary inline prompt until we update config.py
-                prompt = "Extract watch attributes: brand, case_material, dial_color, strap_material, movement_type. Return JSON."
+                prompt = WATCH_VISION_EXTRACTION_PROMPT
                 
             vision = _analyze_image(local_path, prompt)
             vision_results.append(vision)
