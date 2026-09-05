@@ -1049,17 +1049,29 @@ def _build_watch_attributes_from_text_and_vision(
                     attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
     # -----------------------------------------------------------------------
-    # 3. EXPANDED TEXT HEURISTICS FALLBACK
+    # 3. EXPANDED TEXT HEURISTICS (WITH INVOICE ABBREVIATIONS)
     # -----------------------------------------------------------------------
     if attrs.get("case_material") is None:
-        if "oystersteel" in text_lower or "stainless steel" in text_lower or "steel" in text_lower:
+        # Check for combinations first (e.g., "PINK GOLD & ST CASE")
+        if ("pink gold" in text_lower or "rose gold" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
+            attrs["case_material"] = "Rose Gold and Stainless Steel"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Rose"
+        elif ("yellow gold" in text_lower or "gold 18k" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
+            attrs["case_material"] = "Yellow Gold and Stainless Steel"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Yellow"
+        # Single materials
+        elif "oystersteel" in text_lower or "stainless steel" in text_lower or "st case" in text_lower or "st bct" in text_lower:
             attrs["case_material"] = "Stainless Steel"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Silver"
         elif "titanium" in text_lower:
             attrs["case_material"] = "Titanium"
-        elif "gold 18k" in text_lower or "18k gold" in text_lower or "yellow gold" in text_lower:
-            attrs["case_material"] = "Gold 18K"
-        elif "rose gold" in text_lower:
+            if attrs.get("case_color") is None: attrs["case_color"] = "Gray"
+        elif "pink gold" in text_lower or "rose gold" in text_lower:
             attrs["case_material"] = "Rose Gold"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Rose"
+        elif "yellow gold" in text_lower or "18k gold" in text_lower:
+            attrs["case_material"] = "Gold 18K"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Yellow"
 
     # FIX: Unnested case_color so it applies even if Vision AI found the material
     if attrs.get("case_color") is None:
@@ -1085,19 +1097,23 @@ def _build_watch_attributes_from_text_and_vision(
     if attrs.get("bezel_type") is None:
         if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower: attrs["bezel_type"] = "Ceramic"
         elif "fluted bezel" in text_lower: attrs["bezel_type"] = "Fluted"
+        elif "paved bezel" in text_lower or "pave bezel" in text_lower or "diamond bezel" in text_lower: attrs["bezel_type"] = "Diamond"
         elif "plain bezel" in text_lower: attrs["bezel_type"] = "Plain"
+
+    if attrs.get("dial_embellishment") is None:
+        if "paved" in text_lower or "pave" in text_lower or "brilliants" in text_lower:
+            attrs["dial_embellishment"] = "Diamonds"
 
     if attrs.get("crystal_material") is None:
         if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
         elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
 
     if attrs.get("strap_bracelet_type") is None:
-        if "oyster bracelet" in text_lower or "oyster, " in text_lower or "oystersteel" in text_lower or "bracelet" in text_lower:
+        if "oyster bracelet" in text_lower or "oyster, " in text_lower or "oystersteel" in text_lower or "bracelet" in text_lower or "bct" in text_lower:
             attrs["strap_bracelet_type"] = "Bracelet"
-        elif "leather strap" in text_lower or "alligator" in text_lower:
+        elif "leather strap" in text_lower or "alligator" in text_lower or "strap" in text_lower:
             attrs["strap_bracelet_type"] = "Strap"
 
-    # FIX: Unnested strap_color and strap_material
     if attrs.get("strap_bracelet_material") is None:
         if attrs.get("strap_bracelet_type") == "Bracelet" and attrs.get("case_material") == "Stainless Steel":
             attrs["strap_bracelet_material"] = "Stainless Steel"
@@ -1111,10 +1127,10 @@ def _build_watch_attributes_from_text_and_vision(
             elif "brown" in text_lower: attrs["strap_color"] = "Brown"
 
     if attrs.get("movement_type") is None:
-        if "perpetual" in text_lower or "automatic" in text_lower or "self-winding" in text_lower:
+        if "perpetual" in text_lower or "automatic" in text_lower or "self-winding" in text_lower or "auto mvt" in text_lower or "auto movement" in text_lower:
             attrs["movement_type"] = "Automatic"
         elif "quartz" in text_lower: attrs["movement_type"] = "Quartz"
-        elif "manual" in text_lower: attrs["movement_type"] = "Manual"
+        elif "manual" in text_lower or "hand-winding" in text_lower: attrs["movement_type"] = "Manual"
 
     if attrs.get("functions_complications") is None:
         if "date" in text_lower: attrs["functions_complications"] = "Date"
@@ -1132,10 +1148,14 @@ def _build_watch_attributes_from_text_and_vision(
         elif "gmt-master" in text_lower or "gmt master" in text_lower: attrs["watch_collection"] = "GMT-Master"
         elif "sea-dweller" in text_lower or "sea dweller" in text_lower: attrs["watch_collection"] = "Sea-Dweller"
         elif "sky-dweller" in text_lower or "sky dweller" in text_lower: attrs["watch_collection"] = "Sky-Dweller"
+        elif "ballon bleu" in text_lower: attrs["watch_collection"] = "Ballon Bleu de Cartier"
+        elif "tank" in text_lower: attrs["watch_collection"] = "Tank"
+        elif "santos" in text_lower: attrs["watch_collection"] = "Santos"
+        elif "panthere" in text_lower or "panthère" in text_lower: attrs["watch_collection"] = "Panthère"
 
     if attrs.get("case_shape") is None:
         if "round" in text_lower: attrs["case_shape"] = "Round"
-        elif "rectangular" in text_lower: attrs["case_shape"] = "Rectangular"
+        elif "rectangular" in text_lower or "rectangle" in text_lower: attrs["case_shape"] = "Rectangular"
         elif "square" in text_lower: attrs["case_shape"] = "Square"
 
     if attrs.get("display_type") is None:
