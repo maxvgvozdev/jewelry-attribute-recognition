@@ -1064,6 +1064,12 @@ def _build_watch_attributes_from_text_and_vision(
             attrs["case_material"] = "Rose Gold"
             if attrs.get("case_color") is None: attrs["case_color"] = "Rose"
 
+    # NEW: Extract case diameter using regex (e.g., "41 mm" or "41mm")
+    if attrs.get("case_diameter") is None:
+        dia_match = re.search(r'(\d{2,3})\s*mm\b', text_lower)
+        if dia_match:
+            attrs["case_diameter"] = dia_match.group(1)
+
     if attrs.get("dial_color") is None:
         if "black dial" in text_lower or "black background" in text_lower: attrs["dial_color"] = "Black"
         elif "blue dial" in text_lower: attrs["dial_color"] = "Blue"
@@ -1081,8 +1087,9 @@ def _build_watch_attributes_from_text_and_vision(
         if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
         elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
 
+    # UPDATED: Catch "Oyster" even if "bracelet" isn't explicitly stated
     if attrs.get("strap_bracelet_type") is None:
-        if "oyster bracelet" in text_lower or "bracelet" in text_lower:
+        if "oyster bracelet" in text_lower or "oyster, " in text_lower or "oystersteel" in text_lower or "bracelet" in text_lower:
             attrs["strap_bracelet_type"] = "Bracelet"
             if attrs.get("strap_bracelet_material") is None and attrs.get("case_material") == "Stainless Steel":
                 attrs["strap_bracelet_material"] = "Stainless Steel"
