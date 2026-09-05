@@ -154,7 +154,7 @@ def analyze_image_ollama_style(image_path: str, prompt: str, model: Optional[str
             }
         ],
         "stream": False,
-        "options": {"temperature": 0.2, "num_predict": 1024},
+        "options": {"temperature": 0.2, "num_predict": 2048, "num_ctx": 8192}  # Increased limits for large watch prompt
     }
 
     url_chat = f"{VISION_API_URL}/api/chat"
@@ -179,7 +179,7 @@ def analyze_image_ollama_style(image_path: str, prompt: str, model: Optional[str
             "prompt": prompt,
             "images": [b64],
             "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 1024},
+            "options": {"temperature": 0.2, "num_predict": 2048, "num_ctx": 8192}  # Increased limits here too
         }
         url_gen = f"{VISION_API_URL}/api/generate"
         resp = requests.post(url_gen, headers=_headers(), json=payload_gen, timeout=600)
