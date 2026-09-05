@@ -282,9 +282,11 @@ def _analyze_image(image_path: str, question: str) -> Dict[str, Any]:
     return analyze_image(image_path, question)
 
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """Extracts a JSON object from text, even if surrounded by reasoning, markdown, or truncated."""
     if not text:
         return None
         
+    # 1. Try to find a JSON code block ```json ... ```
     json_block_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
     if json_block_match:
         try:
@@ -292,6 +294,7 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError:
             pass
 
+    # 2. Fallback: Find the first '{' and the very last '}' in the entire text.
     first_brace = text.find('{')
     last_brace = text.rfind('}')
     
@@ -301,6 +304,29 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
             return json.loads(json_str)
         except json.JSONDecodeError:
             pass
+
+    # 3. NEW FALLBACK: Handle truncated JSON (missing closing brace)
+    if first_brace != -1:
+        # Grab everything from the first '{' to the end of the text
+        truncated_json = text[first_brace:]
+        # Strip trailing commas and whitespace that cause JSON errors
+        truncated_json = truncated_json.rstrip().rstrip(',')
+        # Append the missing closing brace
+        repaired_json = truncated_json + '}'
+        
+        try:
+            return json.loads(repaired_json)
+        except json.JSONDecodeError:
+            # If it's still broken (e.g., missing a value at the very end like `"color": `), 
+            # try removing the last incomplete key-value pair
+            try:
+                # Find the last comma and cut it off there, then close the brace
+                last_comma = repaired_json.rfind(',')
+                if last_comma != -1:
+                    fixed_json = repaired_json[:last_comma] + '}'
+                    return json.loads(fixed_json)
+            except Exception:
+                pass
 
     return None
 
