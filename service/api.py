@@ -1021,6 +1021,45 @@ def _build_watch_attributes_from_text_and_vision(
                 if key in attrs and attrs[key] is None and value is not None:
                     attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
+    # -----------------------------------------------------------------------
+    # 3. TEXT HEURISTICS FALLBACK (Extract from Firecrawl text if Vision AI failed)
+    # -----------------------------------------------------------------------
+    if attrs.get("case_material") is None:
+        if "oystersteel" in text_lower or "stainless steel" in text_lower:
+            attrs["case_material"] = "Stainless Steel"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Silver"
+
+    if attrs.get("dial_color") is None:
+        if "black dial" in text_lower: attrs["dial_color"] = "Black"
+        elif "blue dial" in text_lower: attrs["dial_color"] = "Blue"
+        elif "white dial" in text_lower: attrs["dial_color"] = "White"
+        elif "green dial" in text_lower: attrs["dial_color"] = "Green"
+
+    if attrs.get("bezel_type") is None:
+        if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower:
+            attrs["bezel_type"] = "Ceramic"
+
+    if attrs.get("crystal_material") is None:
+        if "sapphire crystal" in text_lower or "sapphire" in text_lower:
+            attrs["crystal_material"] = "Sapphire"
+
+    if attrs.get("strap_bracelet_type") is None:
+        if "oyster bracelet" in text_lower or "bracelet" in text_lower:
+            attrs["strap_bracelet_type"] = "Bracelet"
+            if attrs.get("strap_bracelet_material") is None and attrs.get("case_material") == "Stainless Steel":
+                attrs["strap_bracelet_material"] = "Stainless Steel"
+                if attrs.get("strap_color") is None: attrs["strap_color"] = "Silver"
+
+    if attrs.get("watch_brand") is None:
+        attrs["watch_brand"] = brand
+
+    if attrs.get("watch_collection") is None:
+        if "submariner" in text_lower: attrs["watch_collection"] = "Submariner"
+        elif "datejust" in text_lower: attrs["watch_collection"] = "Datejust"
+        elif "daytona" in text_lower: attrs["watch_collection"] = "Daytona"
+        elif "gmt-master" in text_lower or "gmt master" in text_lower: attrs["watch_collection"] = "GMT-Master"
+        elif "sea-dweller" in text_lower or "sea dweller" in text_lower: attrs["watch_collection"] = "Sea-Dweller"
+
     return attrs
 
 
