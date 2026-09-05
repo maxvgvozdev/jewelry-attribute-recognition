@@ -1048,26 +1048,38 @@ def _build_watch_attributes_from_text_and_vision(
                     attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
     # -----------------------------------------------------------------------
-    # 3. TEXT HEURISTICS FALLBACK (Extract from Firecrawl text if Vision AI failed)
+    # 3. EXPANDED TEXT HEURISTICS FALLBACK
     # -----------------------------------------------------------------------
     if attrs.get("case_material") is None:
-        if "oystersteel" in text_lower or "stainless steel" in text_lower:
+        if "oystersteel" in text_lower or "stainless steel" in text_lower or "steel" in text_lower:
             attrs["case_material"] = "Stainless Steel"
             if attrs.get("case_color") is None: attrs["case_color"] = "Silver"
+        elif "titanium" in text_lower:
+            attrs["case_material"] = "Titanium"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Gray"
+        elif "gold 18k" in text_lower or "18k gold" in text_lower or "yellow gold" in text_lower:
+            attrs["case_material"] = "Gold 18K"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Yellow"
+        elif "rose gold" in text_lower:
+            attrs["case_material"] = "Rose Gold"
+            if attrs.get("case_color") is None: attrs["case_color"] = "Rose"
 
     if attrs.get("dial_color") is None:
-        if "black dial" in text_lower: attrs["dial_color"] = "Black"
+        if "black dial" in text_lower or "black background" in text_lower: attrs["dial_color"] = "Black"
         elif "blue dial" in text_lower: attrs["dial_color"] = "Blue"
         elif "white dial" in text_lower: attrs["dial_color"] = "White"
         elif "green dial" in text_lower: attrs["dial_color"] = "Green"
+        elif "champagne dial" in text_lower: attrs["dial_color"] = "Champagne"
+        elif "silver dial" in text_lower: attrs["dial_color"] = "Silver"
 
     if attrs.get("bezel_type") is None:
-        if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower:
-            attrs["bezel_type"] = "Ceramic"
+        if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower: attrs["bezel_type"] = "Ceramic"
+        elif "fluted bezel" in text_lower: attrs["bezel_type"] = "Fluted"
+        elif "plain bezel" in text_lower: attrs["bezel_type"] = "Plain"
 
     if attrs.get("crystal_material") is None:
-        if "sapphire crystal" in text_lower or "sapphire" in text_lower:
-            attrs["crystal_material"] = "Sapphire"
+        if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
+        elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
 
     if attrs.get("strap_bracelet_type") is None:
         if "oyster bracelet" in text_lower or "bracelet" in text_lower:
@@ -1075,6 +1087,22 @@ def _build_watch_attributes_from_text_and_vision(
             if attrs.get("strap_bracelet_material") is None and attrs.get("case_material") == "Stainless Steel":
                 attrs["strap_bracelet_material"] = "Stainless Steel"
                 if attrs.get("strap_color") is None: attrs["strap_color"] = "Silver"
+        elif "leather strap" in text_lower or "alligator" in text_lower:
+            attrs["strap_bracelet_type"] = "Strap"
+            if attrs.get("strap_bracelet_material") is None and "alligator" in text_lower:
+                attrs["strap_bracelet_material"] = "Alligator Leather"
+
+    if attrs.get("movement_type") is None:
+        if "perpetual" in text_lower or "automatic" in text_lower or "self-winding" in text_lower:
+            attrs["movement_type"] = "Automatic"
+        elif "quartz" in text_lower: attrs["movement_type"] = "Quartz"
+        elif "manual" in text_lower: attrs["movement_type"] = "Manual"
+
+    if attrs.get("functions_complications") is None:
+        if "date" in text_lower: attrs["functions_complications"] = "Date"
+        if "chronograph" in text_lower: attrs["functions_complications"] = "Chronograph"
+        if "gmt" in text_lower: attrs["functions_complications"] = "GMT"
+        if "moon phase" in text_lower: attrs["functions_complications"] = "Moon Phase"
 
     if attrs.get("watch_brand") is None:
         attrs["watch_brand"] = brand
@@ -1085,6 +1113,22 @@ def _build_watch_attributes_from_text_and_vision(
         elif "daytona" in text_lower: attrs["watch_collection"] = "Daytona"
         elif "gmt-master" in text_lower or "gmt master" in text_lower: attrs["watch_collection"] = "GMT-Master"
         elif "sea-dweller" in text_lower or "sea dweller" in text_lower: attrs["watch_collection"] = "Sea-Dweller"
+        elif "sky-dweller" in text_lower or "sky dweller" in text_lower: attrs["watch_collection"] = "Sky-Dweller"
+
+    if attrs.get("case_shape") is None:
+        if "round" in text_lower: attrs["case_shape"] = "Round"
+        elif "rectangular" in text_lower: attrs["case_shape"] = "Rectangular"
+        elif "square" in text_lower: attrs["case_shape"] = "Square"
+
+    if attrs.get("display_type") is None:
+        if "analog" in text_lower: attrs["display_type"] = "Analog"
+        elif "digital" in text_lower: attrs["display_type"] = "Digital"
+
+    if attrs.get("case_back") is None:
+        if "solid case back" in text_lower or "closed case back" in text_lower or "screw-down case back" in text_lower: 
+            attrs["case_back"] = "Closed"
+        elif "transparent case back" in text_lower or "open case back" in text_lower or "skeleton" in text_lower: 
+            attrs["case_back"] = "Open"
 
     return attrs
 
