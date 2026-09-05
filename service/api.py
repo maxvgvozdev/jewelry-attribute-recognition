@@ -1053,18 +1053,21 @@ def _build_watch_attributes_from_text_and_vision(
     if attrs.get("case_material") is None:
         if "oystersteel" in text_lower or "stainless steel" in text_lower or "steel" in text_lower:
             attrs["case_material"] = "Stainless Steel"
-            if attrs.get("case_color") is None: attrs["case_color"] = "Silver"
         elif "titanium" in text_lower:
             attrs["case_material"] = "Titanium"
-            if attrs.get("case_color") is None: attrs["case_color"] = "Gray"
         elif "gold 18k" in text_lower or "18k gold" in text_lower or "yellow gold" in text_lower:
             attrs["case_material"] = "Gold 18K"
-            if attrs.get("case_color") is None: attrs["case_color"] = "Yellow"
         elif "rose gold" in text_lower:
             attrs["case_material"] = "Rose Gold"
-            if attrs.get("case_color") is None: attrs["case_color"] = "Rose"
 
-    # NEW: Extract case diameter using regex (e.g., "41 mm" or "41mm")
+    # FIX: Unnested case_color so it applies even if Vision AI found the material
+    if attrs.get("case_color") is None:
+        if attrs.get("case_material") == "Stainless Steel" or "steel" in text_lower: attrs["case_color"] = "Silver"
+        elif attrs.get("case_material") == "Titanium": attrs["case_color"] = "Gray"
+        elif attrs.get("case_material") == "Gold 18K": attrs["case_color"] = "Yellow"
+        elif attrs.get("case_material") == "Rose Gold": attrs["case_color"] = "Rose"
+
+    # Extract case diameter using regex
     if attrs.get("case_diameter") is None:
         dia_match = re.search(r'(\d{2,3})\s*mm\b', text_lower)
         if dia_match:
@@ -1087,17 +1090,24 @@ def _build_watch_attributes_from_text_and_vision(
         if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
         elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
 
-    # UPDATED: Catch "Oyster" even if "bracelet" isn't explicitly stated
     if attrs.get("strap_bracelet_type") is None:
         if "oyster bracelet" in text_lower or "oyster, " in text_lower or "oystersteel" in text_lower or "bracelet" in text_lower:
             attrs["strap_bracelet_type"] = "Bracelet"
-            if attrs.get("strap_bracelet_material") is None and attrs.get("case_material") == "Stainless Steel":
-                attrs["strap_bracelet_material"] = "Stainless Steel"
-                if attrs.get("strap_color") is None: attrs["strap_color"] = "Silver"
         elif "leather strap" in text_lower or "alligator" in text_lower:
             attrs["strap_bracelet_type"] = "Strap"
-            if attrs.get("strap_bracelet_material") is None and "alligator" in text_lower:
-                attrs["strap_bracelet_material"] = "Alligator Leather"
+
+    # FIX: Unnested strap_color and strap_material
+    if attrs.get("strap_bracelet_material") is None:
+        if attrs.get("strap_bracelet_type") == "Bracelet" and attrs.get("case_material") == "Stainless Steel":
+            attrs["strap_bracelet_material"] = "Stainless Steel"
+        elif "alligator" in text_lower:
+            attrs["strap_bracelet_material"] = "Alligator Leather"
+
+    if attrs.get("strap_color") is None:
+        if attrs.get("strap_bracelet_material") == "Stainless Steel": attrs["strap_color"] = "Silver"
+        elif "leather strap" in text_lower or "alligator" in text_lower:
+            if "black" in text_lower: attrs["strap_color"] = "Black"
+            elif "brown" in text_lower: attrs["strap_color"] = "Brown"
 
     if attrs.get("movement_type") is None:
         if "perpetual" in text_lower or "automatic" in text_lower or "self-winding" in text_lower:
