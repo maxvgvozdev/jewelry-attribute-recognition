@@ -345,6 +345,7 @@ For each purchased product line item, extract:
 - sku_alternate: Second product code linked to the same line (e.g., packing-list code). Null if absent.
 - description: Clean product description. Normalize line breaks to spaces.
 - brand: The specific brand or manufacturer of the item (e.g., Herco, David Yurman, Cartier). Infer from the description if necessary. Null if not present.
+- category: Must be either "jewelry" or "watch". Use "watch" if the item is a timepiece.
 - qty: Numeric quantity. Null if missing.
 - unit: Unit of measure (PC, GM, EA). Null if absent.
 - weight: Numeric line weight. Null if absent.
@@ -360,7 +361,7 @@ Shape:
 {
   "vendor_name": null, "invoice_number": null, "invoice_date": null, "currency": null,
   "line_items": [
-    {"sku": null, "sku_alternate": null, "description": null, "brand": null, "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
+    {"sku": null, "sku_alternate": null, "description": null, "brand": null, "category": "jewelry", "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
   ],
   "subtotal": null, "freight": null, "total": null, "needs_review": false, "review_reason": null
 }"""
@@ -1418,7 +1419,15 @@ def parse_invoice(file: UploadFile = File(...)):
         for raw_item in raw_line_items:
             desc = raw_item.get("description") or ""
             sku = raw_item.get("sku") or ""
-            item_category = raw_item.get("category", "jewelry").lower()
+            
+            # Determine category (fallback to text heuristics if AI failed to output it)
+            item_category = raw_item.get("category", "").lower()
+            if not item_category:
+                desc_lower = desc.lower()
+                if "watch" in desc_lower or "mvt" in desc_lower or "movement" in desc_lower or "mm" in desc_lower:
+                    item_category = "watch"
+                else:
+                    item_category = "jewelry"
             
             item_attrs = _build_attributes_from_text_and_vision(
                 brand=vendor_name,
