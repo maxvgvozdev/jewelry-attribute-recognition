@@ -1115,7 +1115,8 @@ def _build_watch_attributes_from_text_and_vision(
             attrs["strap_bracelet_type"] = "Strap"
 
     if attrs.get("strap_bracelet_material") is None:
-        if attrs.get("strap_bracelet_type") == "Bracelet" and attrs.get("case_material") == "Stainless Steel":
+        # Changed from == "Stainless Steel" to "Stainless Steel" in attrs.get(...)
+        if attrs.get("strap_bracelet_type") == "Bracelet" and "Stainless Steel" in (attrs.get("case_material") or ""):
             attrs["strap_bracelet_material"] = "Stainless Steel"
         elif "alligator" in text_lower:
             attrs["strap_bracelet_material"] = "Alligator Leather"
