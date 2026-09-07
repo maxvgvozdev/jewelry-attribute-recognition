@@ -1,363 +1,138 @@
-Business Central Integration Manual: Jewelry Attribute Recognition API
-1. Overview
-This document outlines how to integrate the Jewelry Attribute Recognition API into Microsoft Business Central using AL.
+Architecture & Deployment Guide
+This document outlines the architecture of the Jewelry & Watch Attribute Recognition API and provides instructions for deploying it as a background service on Windows Server 2025.
 
-The API operates in a 2-Step Workflow:
+1. Architecture Overview
+The service is a synchronous workflow engine wrapped in a FastAPI REST interface, designed to integrate with Microsoft Business Central via a 2-step process (Invoice Parsing -> Item Enrichment).
 
-Step 1 (Invoice Parsing): BC uploads a vendor invoice PDF. The API uses Spark AI to extract Vendor Info, Line Items, Brand, and basic Jewelry Attributes.
-Step 2 (Item Enrichment): BC sends the extracted Item Number, Brand, and the pre-filled attributes from Step 1. The API searches the web, downloads images, uses Vision AI to analyze them, and fills in any missing attributes.
-Because both steps involve Vision AI processing, responses can take up to 600 seconds (10 minutes). Direct synchronous calls from the BC UI will crash the user session. This manual uses a background Job Queue architecture to handle this gracefully.
+API Layer: FastAPI + Uvicorn (async endpoints wrapping synchronous heavy-lifting).
+Category Routing: api.py routes logic based on a category field (jewelry or watch). This determines which Pydantic model, Vision prompt, and BC365 validation map is used.
+Workflow Engine (run_jewelry_workflow): Executes a multi-step pipeline:
+Validates provided identifiers (UPC / Vendor Item Number).
+Attempts item discovery via a Firecrawl proxy script or falls back to direct HTTP requests.
+Scrapes resolved product pages for text and image URLs.
+Downloads images to the local artifacts/ directory.
+Sends images to a Vision Client (service/vision_client.py) for attribute extraction. Forces "format": "json" to prevent LLM rambling.
+Merges text-heuristics and Vision AI results. Includes a smart JSON repair function (_extract_json_from_text) to fix truncated LLM outputs.
+Data Models: Pydantic V2 models strictly validate incoming Business Central payloads and outgoing attribute responses (31 Jewelry attributes or 40+ Watch attributes).
+2. Dual-Instance Architecture (Server Setup)
+To develop new features safely without breaking the live Business Central integration, the Windows Server runs two isolated instances of the service simultaneously:
 
-API Endpoints:
+Production Instance:
+Folder: C:\Deploy\jewelry-attribute-recognition\service
+Port: 8000
+Script: deploy.ps1
+Task Name: JewelryAgentAPI
+Test Instance:
+Folder: C:\Deploy\jewelry-attribute-recognition-test\service
+Port: 8001
+Script: deploy_test.ps1
+Task Name: JewelryAgentAPI_Test
+3. Windows Server 2025 Deployment Strategy
+⚠️ Important: Why We Use Task Scheduler (Not pywin32)
 
-Step 1: POST http://<SERVER_IP>:8000/api/invoice/parse
-Step 2: POST http://<SERVER_IP>:8000/api/jewelry/recognize
+Historically, Python services on Windows were deployed using pywin32 (pythonservice.exe). This is strictly incompatible with Windows Server 2025.
 
-2. Prerequisites
-Network Access: The BC Server must be able to reach the Python API server on port 8000.
-Error Handling: The API returns standard HTTP status codes:
-200 OK: Success.
-404 Not Found: Search failed to find the item. (BC should log this or prompt the user for a direct source_url).
-500 Internal Server Error: Vision AI, Firecrawl, or network failure.
+During initial deployment, we discovered that pywin32 fails silently on Server 2025:
 
-3. Data Structure: The 31 Attributes Table
-Create a dedicated table to hold the exact 31 attributes returned by the API. This keeps the standard Item table clean and groups the jewelry-specific data logically.
+It fails to write the required Parameters registry keys (PythonClass, PythonPath, PythonDll).
+Even when keys are manually created, pythonservice.exe fails to load the Python DLL and crashes instantly with exit code 0, leaving no Event Viewer logs.
+The Solution: We use the native Windows Task Scheduler configured to run at startup under the SYSTEM account. This provides the exact same behavior as a Windows Service (auto-restart, background execution, runs before user login) but is 100% reliable and requires zero third-party C++ binaries.
 
-al
+4. Prerequisites
+OS: Windows Server 2025
+Python: Python 3.11 (64-bit)
+Git: Installed and available in PATH
+Permissions: PowerShell run as Administrator
+5. Initial Deployment (First-Time Setup)
+These steps are only required the very first time you set up the server. Below is the setup for the Test Instance. Repeat for Production, swapping -test and _Test with the production equivalents, and setting the port to 8000.
 
-table 50101 "Jewelry Item Attribute"
-{
-    Caption = 'Jewelry Item Attribute';
-    DataClassification = CustomerContent;
-    LookupPageId = "Jewelry Item Attributes List";
-    DrillDownPageId = "Jewelry Item Attributes List";
-
-    fields
-    {
-        field(1; "Item No."; Code[20]) { }
-        field(10; "Metal Type"; Text[100]) { }
-        field(11; "Metal Color"; Text[100]) { }
-        field(12; "Stone Primary Color"; Text[100]) { }
-        field(13; "Product Type"; Text[100]) { }
-        field(14; "Gender"; Text[100]) { }
-        field(15; "Center Stone Type"; Text[100]) { }
-        field(16; "Center Stone Shape"; Text[100]) { }
-        field(17; "Side Stone 1 Type"; Text[100]) { }
-        field(18; "Side Stone 1 Shape"; Text[100]) { }
-        field(19; "Side Stone 2 Type"; Text[100]) { }
-        field(20; "Side Stone 2 Shape"; Text[100]) { }
-        field(21; "Engagement Set Type"; Text[100]) { }
-        field(22; "Engagement Ring Type"; Text[100]) { }
-        field(23; "Wedding Band Type"; Text[100]) { }
-        field(24; "Wedding Band Setting Type"; Text[100]) { }
-        field(25; "Wedding Band Stone Continuity"; Text[100]) { }
-        field(26; "Fashion Ring Type"; Text[100]) { }
-        field(27; "Earring Type"; Text[100]) { }
-        field(28; "Necklace Type"; Text[100]) { }
-        field(29; "Bracelet Type"; Text[100]) { }
-        field(30; "Accessory Type"; Text[100]) { }
-        field(31; "Theme"; Text[100]) { }
-        field(32; "Occasion"; Text[100]) { }
-        field(33; "Jewelry Shape"; Text[100]) { }
-        field(34; "Motif"; Text[100]) { }
-        field(35; "Finishing Type"; Text[100]) { }
-        field(36; "Estate Period"; Text[100]) { }
-        field(37; "Holiday Code"; Text[100]) { }
-        field(38; "Chain Type"; Text[100]) { }
-        field(39; "Clasp Type"; Text[100]) { }
-        field(40; "Earring Back"; Text[100]) { }
-    }
-    
-    keys
-    {
-        key(PK; "Item No.") { Clustered = true; }
-    }
-}
-
-4. Core Integration Codeunit
-This codeunit handles the HTTP requests for both Step 1 (PDF Upload) and Step 2 (Item Enrichment). It safely parses JSON null values and maps all 31 fields.
-
-al
-
-codeunit 50100 "Jewelry AI Mgmt."
-{
-    var
-        APIBaseUrl: Text;
-
-    local procedure GetApiUrl(): Text
-    begin
-        // Set this via your setup table or hardcoded for testing
-        exit('http://<SERVER_IP>:8000');
-    end;
-
-    // =========================================================================
-    // STEP 1: Parse Invoice PDF
-    // =========================================================================
-    procedure ParseInvoicePdf(PdfInStream: InStream; FileName: Text) ResponseJson: JsonObject
-    var
-        Client: HttpClient;
-        RequestMessage: HttpRequestMessage;
-        Response: HttpResponseMessage;
-        RequestContent: HttpContent;
-        RequestHeaders: HttpHeaders;
-        ErrorResponse: JsonObject;
-        MultipartBody: TextBuilder;
-        Base64Convert: Codeunit "Base64 Convert";
-        PdfBase64: Text;
-    begin
-        Client.Timeout(600000); // 10 min timeout
-
-        // AL requires manual construction of Multipart Form Data for file uploads
-        PdfBase64 := Base64Convert.ToBase64(PdfInStream);
-        
-        MultipartBody.AppendLine('--Boundary_ABC123');
-        MultipartBody.AppendLine('Content-Disposition: form-data; name="file"; filename="' + FileName + '"');
-        MultipartBody.AppendLine('Content-Type: application/pdf');
-        MultipartBody.AppendLine('');
-        MultipartBody.AppendLine(PdfBase64);
-        MultipartBody.AppendLine('--Boundary_ABC123--');
-
-        RequestContent.WriteFrom(MultipartBody.ToText());
-        RequestContent.GetHeaders(RequestHeaders);
-        RequestHeaders.Remove('Content-Type');
-        RequestHeaders.Add('Content-Type', 'multipart/form-data; boundary=Boundary_ABC123');
-
-        RequestMessage.Method := 'POST';
-        RequestMessage.SetRequestUri(GetApiUrl() + '/api/invoice/parse');
-        RequestMessage.Content := RequestContent;
-
-        if Client.Send(RequestMessage, Response) then begin
-            if Response.IsSuccessStatusCode() then
-                ResponseJson := ParseHttpResponse(Response)
-            else begin
-                ErrorResponse.Add('error', 'HTTP ' + Format(Response.HttpStatusCode()));
-                ErrorResponse.Add('response_text', GetResponseText(Response));
-                ResponseJson := ErrorResponse;
-            end;
-        end else begin
-            ErrorResponse.Add('error', 'Network request failed to reach Python API.');
-            ResponseJson := ErrorResponse;
-        end;
-    end;
-
-    // =========================================================================
-    // STEP 2: Enrich Item Attributes via Web/Vision AI
-    // =========================================================================
-    procedure EnrichItemAttributes(ItemNo: Code[20]; Brand: Text; VendorItemNo: Text; UpcCode: Text; SourceUrl: Text; PreFilledAttributes: JsonObject)
-    var
-        JewelAttr: Record "Jewelry Item Attribute";
-        Client: HttpClient;
-        Response: HttpResponseMessage;
-        RequestBody: JsonObject;
-        RequestContent: HttpContent;
-        RequestHeaders: HttpHeaders;
-        RequestMessage: HttpRequestMessage;
-        ResponseText: Text;
-        JsonObj: JsonObject;
-        AttributesObj: JsonObject;
-        JToken: JsonToken;
-    begin
-        Client.Timeout(600000); // 10 min timeout
-
-        // 1. Build Request Payload
-        RequestBody.Add('brand', Brand);
-        RequestBody.Add('vendor_item_number', VendorItemNo);
-        RequestBody.Add('upc_code', UpcCode);
-        RequestBody.Add('source_url', SourceUrl);
-        
-        // Pass the attributes extracted from the invoice in Step 1
-        if not PreFilledAttributes.IsEmpty() then
-            RequestBody.Add('pre_filled_attributes', PreFilledAttributes);
-
-        RequestContent.WriteFrom(Format(RequestBody));
-        RequestContent.GetHeaders(RequestHeaders);
-        RequestHeaders.Remove('Content-Type');
-        RequestHeaders.Add('Content-Type', 'application/json');
-
-        RequestMessage.Method := 'POST';
-        RequestMessage.SetRequestUri(GetApiUrl() + '/api/jewelry/recognize');
-        RequestMessage.Content := RequestContent;
-
-        // 2. Execute HTTP Call
-        if not Client.Send(RequestMessage, Response) then
-            Error('Network error connecting to Jewelry AI service.');
-
-        if not Response.IsSuccessStatusCode then begin
-            Response.Content().ReadAs(ResponseText);
-            Error('API returned error %1: %2', Response.HttpStatusCode, ResponseText);
-        end;
-
-        // 3. Parse Response JSON
-        Response.Content().ReadAs(ResponseText);
-        if not JsonObj.ReadFrom(ResponseText) then
-            Error('Invalid JSON returned from API.');
-
-        if not JsonObj.Get('attributes', JToken) then
-            Error('API response missing "attributes" object.');
-        AttributesObj := JToken.AsObject();
-
-        // 4. Get or Create the Jewelry Attribute record
-        if not JewelAttr.Get(ItemNo) then begin
-            JewelAttr.Init();
-            JewelAttr."Item No." := ItemNo;
-            JewelAttr.Insert();
-        end;
-
-        // 5. Map ALL 31 JSON fields to BC Table Fields
-        JewelAttr.Validate("Metal Type", GetJsonFieldText(AttributesObj, 'metal_type'));
-        JewelAttr.Validate("Metal Color", GetJsonFieldText(AttributesObj, 'metal_color'));
-        JewelAttr.Validate("Stone Primary Color", GetJsonFieldText(AttributesObj, 'stone_primary_color'));
-        JewelAttr.Validate("Product Type", GetJsonFieldText(AttributesObj, 'product_type'));
-        JewelAttr.Validate("Gender", GetJsonFieldText(AttributesObj, 'gender'));
-        JewelAttr.Validate("Center Stone Type", GetJsonFieldText(AttributesObj, 'center_stone_type'));
-        JewelAttr.Validate("Center Stone Shape", GetJsonFieldText(AttributesObj, 'center_stone_shape'));
-        JewelAttr.Validate("Side Stone 1 Type", GetJsonFieldText(AttributesObj, 'side_stone_1_type'));
-        JewelAttr.Validate("Side Stone 1 Shape", GetJsonFieldText(AttributesObj, 'side_stone_1_shape'));
-        JewelAttr.Validate("Side Stone 2 Type", GetJsonFieldText(AttributesObj, 'side_stone_2_type'));
-        JewelAttr.Validate("Side Stone 2 Shape", GetJsonFieldText(AttributesObj, 'side_stone_2_shape'));
-        JewelAttr.Validate("Engagement Set Type", GetJsonFieldText(AttributesObj, 'engagement_set_type'));
-        JewelAttr.Validate("Engagement Ring Type", GetJsonFieldText(AttributesObj, 'engagement_ring_type'));
-        JewelAttr.Validate("Wedding Band Type", GetJsonFieldText(AttributesObj, 'wedding_band_type'));
-        JewelAttr.Validate("Wedding Band Setting Type", GetJsonFieldText(AttributesObj, 'wedding_band_setting_type'));
-        JewelAttr.Validate("Wedding Band Stone Continuity", GetJsonFieldText(AttributesObj, 'wedding_band_stone_continuity'));
-        JewelAttr.Validate("Fashion Ring Type", GetJsonFieldText(AttributesObj, 'fashion_ring_type'));
-        JewelAttr.Validate("Earring Type", GetJsonFieldText(AttributesObj, 'earring_type'));
-        JewelAttr.Validate("Necklace Type", GetJsonFieldText(AttributesObj, 'necklace_type'));
-        JewelAttr.Validate("Bracelet Type", GetJsonFieldText(AttributesObj, 'bracelet_type'));
-        JewelAttr.Validate("Accessory Type", GetJsonFieldText(AttributesObj, 'accessory_type'));
-        JewelAttr.Validate("Theme", GetJsonFieldText(AttributesObj, 'theme'));
-        JewelAttr.Validate("Occasion", GetJsonFieldText(AttributesObj, 'occasion'));
-        JewelAttr.Validate("Jewelry Shape", GetJsonFieldText(AttributesObj, 'jewelry_shape'));
-        JewelAttr.Validate("Motif", GetJsonFieldText(AttributesObj, 'motif'));
-        JewelAttr.Validate("Finishing Type", GetJsonFieldText(AttributesObj, 'finishing_type'));
-        JewelAttr.Validate("Estate Period", GetJsonFieldText(AttributesObj, 'estate_period'));
-        JewelAttr.Validate("Holiday Code", GetJsonFieldText(AttributesObj, 'holiday_code'));
-        JewelAttr.Validate("Chain Type", GetJsonFieldText(AttributesObj, 'chain_type'));
-        JewelAttr.Validate("Clasp Type", GetJsonFieldText(AttributesObj, 'clasp_type'));
-        JewelAttr.Validate("Earring Back", GetJsonFieldText(AttributesObj, 'earring_back'));
-        
-        JewelAttr.Modify(true);
-    end;
-
-    local procedure ParseHttpResponse(Response: HttpResponseMessage): JsonObject
-    var
-        ResponseText: Text;
-        ResponseJson: JsonObject;
-    begin
-        Response.Content.ReadAs(ResponseText);
-        if ResponseJson.ReadFrom(ResponseText) then
-            exit(ResponseJson);
-        ResponseJson.Add('raw', ResponseText);
-        exit(ResponseJson);
-    end;
-
-    local procedure GetResponseText(Response: HttpResponseMessage): Text
-    var
-        ResponseText: Text;
-    begin
-        Response.Content.ReadAs(ResponseText);
-        exit(ResponseText);
-    end;
-
-    local procedure GetJsonFieldText(JsonObj: JsonObject; KeyName: Text): Text[100]
-    var
-        JToken: JsonToken;
-    begin
-        if JsonObj.Get(KeyName, JToken) then
-            if not JToken.IsNull then
-                exit(CopyStr(JToken.AsValue().AsText(), 1, MaxStrLen(GetJsonFieldText)));
-        exit('');
-    end;
-}
-
-5. CRITICAL: Asynchronous Background Processing
-Do not run either step synchronously from the UI. BC sessions have strict timeouts. Both Step 1 (PDF Parsing) and Step 2 (Web Enrichment) can take minutes.
-
-You must wrap the calls in a Background Job Queue.
-
-al
-
-codeunit 50101 "Jewelry AI Job Queue"
-{
-    TableNo = "Job Queue Entry";
-
-    trigger OnRun()
-    var
-        JewelryMgmt: Codeunit "Jewelry AI Mgmt.";
-        Item: Record Item;
-        // In a real scenario, you'd retrieve the PDF stream and PreFilledAttributes 
-        // from a temporary staging table using Rec."Parameter String" as the ID.
-    begin
-        // Example logic for Step 2:
-        if Item.Get(Rec."Parameter String") then begin
-            // Fetch pre-filled attributes from staging table...
-            // JewelryMgmt.EnrichItemAttributes(Item."No.", Item."Manufacturer Code", Item."Vendor Item No.", Item."GTIN", '', PreFilledAttrs);
-        end;
-    end;
-}
-
-6. UI Integration (Item Card)
-Add actions to allow users to trigger the workflow. Typically, a user uploads a PDF (Step 1), reviews the extracted data in BC, and then clicks "Enrich Item" (Step 2).
-
-al
-
-pageextension 50100 "Item Card Ext" extends "Item Card"
-{
-    actions
-    {
-        addlast(Processing)
-        {
-            action(ActionAIEnrich)
-            {
-                ApplicationArea = All;
-                Caption = 'Enrich Jewelry Attributes (Web/Vision)';
-                Image = Picture;
-                ToolTip = 'Searches the web and uses Vision AI to fill missing jewelry attributes.';
-
-                trigger OnAction()
-                var
-                    JobQueueEntry: Record "Job Queue Entry";
-                    JobQueueMgt: Codeunit "Job Queue - Enqueue";
-                begin
-                    // Enqueue Step 2
-                    JobQueueEntry.Init();
-                    JobQueueEntry."Object Type to Run" := JobQueueEntry."Object Type to Run"::Codeunit;
-                    JobQueueEntry."Object ID to Run" := CODEUNIT::"Jewelry AI Job Queue";
-                    JobQueueEntry."Parameter String" := Rec."No.";
-                    JobQueueEntry."Description" := 'Jewelry AI Enrichment for ' + Rec."No.";
-                    JobQueueEntry."Maximum No. of Attempts to Run" := 1;
-                    JobQueueMgt.EnqueueJobQueueEntry(JobQueueEntry);
-                    
-                    Message('Item %1 has been queued for Web/Vision AI enrichment.', Rec."No.");
-                end;
-            }
-        }
-    }
-}
-
-7. Testing from the BC Server
-Before testing inside BC, verify network connectivity and API functionality directly from the Business Central server via PowerShell:
+5.1. Clone and Setup Environment
+cd C:\Deploygit clone https://github.com/maxvgvozdev/jewelry-attribute-recognition.git jewelry-attribute-recognition-testcd jewelry-attribute-recognition-test\service# Create and activate virtual environmentpython -m venv .venv.\.venv\Scripts\activatepip install -r requirements.txt
+5.2. Create Log Directory
+The Task Scheduler needs a directory to write application logs.
 
 powershell
 
-# 1. Test Health
-Invoke-RestMethod -Method Get -Uri http://<SERVER_IP>:8000/health
+New-Item -ItemType Directory -Force -Path "C:\Deploy\jewelry-attribute-recognition-test\service\logs"
+5.3. Register the Scheduled Task
+Run this block in an elevated PowerShell to register the API as a background task that auto-starts on boot. Note the set JEWELRY_API_PORT=8001 which forces the test instance to use the correct port.
 
-# 2. Test Step 1 (Invoice Parsing - requires multipart form construction)
-# (Best tested directly through the API Swagger UI at http://<SERVER_IP>:8000/docs)
+powershell
 
-# 3. Test Step 2 (Item Enrichment)
-Invoke-RestMethod -Method Post -Uri http://<SERVER_IP>:8000/api/jewelry/recognize `
-  -ContentType "application/json" `
-  -TimeoutSec 600 `
-  -Body '{"brand":"John Hardy","vendor_item_number":"254069","upc_code":"8254292540696","source_url":"","pre_filled_attributes":{"metal_type":"STSILVER","metal_color":"White","product_type":"Bracelets","center_stone_type":"Blue Sapphire"}}' | ConvertTo-Json -Depth 10
+ $Action = New-ScheduledTaskAction -Execute "cmd.exe" `
+    -Argument "/c set JEWELRY_API_PORT=8001 && .venv\Scripts\python.exe api.py >> logs\api.log 2>&1" `
+    -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition-test\service"
 
-  8. Developer Checklist
- Create Jewelry AI Setup table and page. Populate the API Endpoint URL (http://<SERVER_IP>:8000).
- Create Jewelry Item Attribute table with the exact 31 fields specified above.
- Create List Pages for the Attribute table and add a FactBox on the Item Card.
- Deploy Jewelry AI Mgmt. codeunit (handles both Step 1 PDF upload and Step 2 JSON enrichment).
- Deploy the Jewelry AI Job Queue codeunit to handle long-running tasks in the background.
- Confirm the BC Server firewall allows outbound HTTP traffic to the Python API server.
- Test via PowerShell from the BC Server first to rule out network issues.
- Test via BC UI and confirm the user session does not freeze (thanks to Job Queues).
+ $Trigger = New-ScheduledTaskTrigger -AtStartup
+ $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+ $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -DontStopOnIdleEnd -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+Register-ScheduledTask -TaskName "JewelryAgentAPI_Test" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Jewelry Attribute Recognition API (Test)" -Force
+(Note: We use cmd.exe /c with >> to properly route Python's stdout and stderr into a persistent text file, as Task Scheduler does not natively capture console output).
+
+Important: When editing the task in Task Scheduler, ensure the "Start in (optional)" field is explicitly set to C:\Deploy\jewelry-attribute-recognition-test\service. If this is blank, the service will start in C:\Windows\System32 and fail to find your code.
+
+5.4. Start and Verify
+powershell
+
+Start-ScheduledTask -TaskName "JewelryAgentAPI_Test"
+Start-Sleep -Seconds 3
+
+# Check status
+Get-ScheduledTask -TaskName "JewelryAgentAPI_Test" | Select-Object TaskName, State
+
+# Check health endpoint
+curl http://localhost:8001/health -UseBasicParsing
+6. Ongoing Deployment (Code Updates)
+Helper scripts (deploy.ps1 and deploy_test.ps1) are included in the service/ directory to automate pulling updates from GitHub and restarting the task.
+
+To deploy to the Test Instance:
+
+powershell
+
+cd C:\Deploy\jewelry-attribute-recognition-test\service
+.\deploy_test.ps1
+To deploy to the Production Instance:
+
+powershell
+
+cd C:\Deploy\jewelry-attribute-recognition\service
+.\deploy.ps1
+What the script does:
+
+Stops the running task.
+Pulls latest code from origin/master.
+Restarts the task.
+Runs a health check to confirm it came up successfully.
+7. Operations & Maintenance
+Checking Logs
+Because the service runs via cmd.exe, all Python print() and logging statements are routed to a flat file.
+
+powershell
+
+# View last 50 lines of the log (Test Instance)
+Get-Content C:\Deploy\jewelry-attribute-recognition-test\service\logs\api.log -Tail 50
+
+# Watch the log in real-time
+Get-Content C:\Deploy\jewelry-attribute-recognition-test\service\logs\api.log -Wait
+Tip: If the log file gets too large, you can safely delete api.log while the service is running; it will automatically recreate it on the next log write.
+
+Manually Stopping/Starting
+powershell
+
+Stop-ScheduledTask -TaskName "JewelryAgentAPI_Test"
+Start-ScheduledTask -TaskName "JewelryAgentAPI_Test"
+Uninstalling
+To completely remove the background task from the server:
+
+powershell
+
+Stop-ScheduledTask -TaskName "JewelryAgentAPI_Test" -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "JewelryAgentAPI_Test" -Confirm:$false
+8. Troubleshooting
+Swagger UI says "Failed to fetch" (CORS error): This is usually a false alarm. It means the API crashed while processing your request. Check logs/api.log for a Python Traceback. You can also bypass Swagger by running the API manually: cd C:\Deploy\jewelry-attribute-recognition-test\service, set $env:JEWELRY_API_PORT="8001", and run python api.py to see errors print directly to the console.
+Vision AI returns null for all image attributes: The Vision AI prompt may have been truncated due to token limits. Ensure vision_client.py has num_ctx: 8192 and num_predict: 2048. We also rely on _extract_json_from_text in api.py to repair truncated JSON outputs.
+API returns 500 on /api/jewelry/recognize: Check logs/api.log. This is usually a network timeout to external sites (UPC database, Firecrawl) or a missing dependency in vision_client.py.
+Task State is "Ready" but API is unreachable: The Python process likely crashed on startup (e.g., port already in use, or syntax error in api.py). Check logs/api.log for the Python traceback.
+Port already in use: Find the conflicting process with netstat -ano | findstr :8001 (or 8000) and kill it with taskkill /PID <pid> /F before restarting the task.
+API times out on /api/jewelry/recognize with a local network error: Ensure Tailscale is connected and running on the Windows Server. Run Test-NetConnection -ComputerName 100.88.93.128 -Port 11434. If this fails, the API cannot reach the local Vision AI on the Spark machine.
