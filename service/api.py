@@ -1049,21 +1049,21 @@ def _build_watch_attributes_from_text_and_vision(
                     attrs[key] = _normalize_to_bc365(key, str(value), "watch")
 
     # -----------------------------------------------------------------------
-    # 3. EXPANDED TEXT HEURISTICS (WITH INVOICE ABBREVIATIONS & REGEX)
+    # 3. EXPANDED TEXT HEURISTICS (WITH FORCED OVERRIDES)
     # -----------------------------------------------------------------------
-    if attrs.get("case_material") is None:
-        if ("pink gold" in text_lower or "rose gold" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
-            attrs["case_material"] = "Rose Gold and Stainless Steel"
-        elif ("yellow gold" in text_lower or "gold 18k" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
-            attrs["case_material"] = "Yellow Gold and Stainless Steel"
-        elif "oystersteel" in text_lower or "stainless steel" in text_lower or "st case" in text_lower or "steel case" in text_lower:
-            attrs["case_material"] = "Stainless Steel"
-        elif "titanium" in text_lower:
-            attrs["case_material"] = "Titanium"
-        elif "pink gold" in text_lower or "rose gold" in text_lower:
-            attrs["case_material"] = "Rose Gold"
-        elif "yellow gold" in text_lower or "18k gold" in text_lower:
-            attrs["case_material"] = "Gold 18K"
+    # OVERRIDE: Force case_material if text explicitly mentions two-tone combinations
+    if ("pink gold" in text_lower or "rose gold" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
+        attrs["case_material"] = "Rose Gold and Stainless Steel"
+    elif ("yellow gold" in text_lower or "gold 18k" in text_lower) and ("st case" in text_lower or "steel" in text_lower):
+        attrs["case_material"] = "Yellow Gold and Stainless Steel"
+    elif "oystersteel" in text_lower or "stainless steel" in text_lower or "st case" in text_lower or "steel case" in text_lower:
+        attrs["case_material"] = "Stainless Steel"
+    elif "titanium" in text_lower:
+        attrs["case_material"] = "Titanium"
+    elif "pink gold" in text_lower or "rose gold" in text_lower:
+        attrs["case_material"] = "Rose Gold"
+    elif "yellow gold" in text_lower or "18k gold" in text_lower:
+        attrs["case_material"] = "Gold 18K"
 
     if attrs.get("case_color") is None:
         if "Stainless Steel" in (attrs.get("case_material") or "") or "steel" in text_lower: attrs["case_color"] = "Silver"
@@ -1077,60 +1077,60 @@ def _build_watch_attributes_from_text_and_vision(
         if dia_match:
             attrs["case_diameter"] = dia_match.group(1)
 
-    # NEW: Extract case thickness using regex (e.g., "thickness: 10.16 mm")
+    # Extract case thickness using regex (e.g., "thickness: 10.16 mm")
     if attrs.get("case_thickness_mm") is None:
         thick_match = re.search(r'thickness:?\s*(\d+\.?\d*)\s*mm', text_lower)
         if thick_match:
             attrs["case_thickness_mm"] = thick_match.group(1)
 
-    # NEW: Extract water resistance using regex (e.g., "30 meters" or "30m")
+    # Extract water resistance using regex (e.g., "30 meters" or "30m")
     if attrs.get("water_resistance_m") is None:
         water_match = re.search(r'(\d+)\s*(?:meters|m)\b', text_lower)
         if water_match and 'mm' not in water_match.group(0):
             attrs["water_resistance_m"] = water_match.group(1)
 
-    if attrs.get("dial_color") is None:
-        if "black dial" in text_lower or "black background" in text_lower: attrs["dial_color"] = "Black"
-        elif "blue dial" in text_lower: attrs["dial_color"] = "Blue"
-        elif "white dial" in text_lower: attrs["dial_color"] = "White"
-        elif "green dial" in text_lower: attrs["dial_color"] = "Green"
-        elif "champagne dial" in text_lower: attrs["dial_color"] = "Champagne"
-        elif "silver dial" in text_lower or "silver guilloché" in text_lower or "silver guilloche" in text_lower: attrs["dial_color"] = "Silver"
+    # OVERRIDE: Force dial_color if text explicitly mentions it
+    if "black dial" in text_lower: attrs["dial_color"] = "Black"
+    elif "blue dial" in text_lower: attrs["dial_color"] = "Blue"
+    elif "white dial" in text_lower: attrs["dial_color"] = "White"
+    elif "green dial" in text_lower: attrs["dial_color"] = "Green"
+    elif "champagne dial" in text_lower: attrs["dial_color"] = "Champagne"
+    elif "silver dial" in text_lower or "silver guilloché" in text_lower or "silver guilloche" in text_lower: attrs["dial_color"] = "Silver"
 
-    if attrs.get("bezel_type") is None:
-        if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower: attrs["bezel_type"] = "Ceramic"
-        elif "fluted bezel" in text_lower: attrs["bezel_type"] = "Fluted"
-        elif "paved bezel" in text_lower or "pave bezel" in text_lower or "diamond bezel" in text_lower or "bezel set with" in text_lower: attrs["bezel_type"] = "Diamond"
-        elif "plain bezel" in text_lower: attrs["bezel_type"] = "Plain"
+    # OVERRIDE: Force bezel_type if text explicitly mentions it
+    if "cerachrom bezel" in text_lower or "ceramic bezel" in text_lower: attrs["bezel_type"] = "Ceramic"
+    elif "fluted bezel" in text_lower: attrs["bezel_type"] = "Fluted"
+    elif "paved bezel" in text_lower or "pave bezel" in text_lower or "diamond bezel" in text_lower or "bezel set with" in text_lower: attrs["bezel_type"] = "Diamond"
+    elif "plain bezel" in text_lower: attrs["bezel_type"] = "Plain"
 
     if attrs.get("dial_embellishment") is None:
         if "paved" in text_lower or "pave" in text_lower or "brilliants" in text_lower or "diamonds" in text_lower:
             attrs["dial_embellishment"] = "Diamonds"
 
-    if attrs.get("crystal_material") is None:
-        if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
-        elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
+    # OVERRIDE: Force crystal_material if text explicitly mentions it
+    if "sapphire crystal" in text_lower or "sapphire" in text_lower: attrs["crystal_material"] = "Sapphire"
+    elif "mineral crystal" in text_lower or "mineral glass" in text_lower: attrs["crystal_material"] = "Glass"
 
     if attrs.get("strap_bracelet_type") is None:
         if "bracelet" in text_lower or "bct" in text_lower: attrs["strap_bracelet_type"] = "Bracelet"
         elif "leather strap" in text_lower or "alligator" in text_lower or "strap" in text_lower: attrs["strap_bracelet_type"] = "Strap"
 
-    # FIX: Upgraded strap_bracelet_material to detect two-tone combinations
-    if attrs.get("strap_bracelet_material") is None:
-        if "rose gold" in text_lower and ("steel" in text_lower or "stainless" in text_lower):
-            attrs["strap_bracelet_material"] = "Rose Gold and Stainless Steel"
-        elif "yellow gold" in text_lower and ("steel" in text_lower or "stainless" in text_lower):
-            attrs["strap_bracelet_material"] = "Yellow Gold and Stainless Steel"
-        elif attrs.get("strap_bracelet_type") == "Bracelet" and "Stainless Steel" in (attrs.get("case_material") or ""):
-            attrs["strap_bracelet_material"] = "Stainless Steel"
-        elif "alligator" in text_lower:
-            attrs["strap_bracelet_material"] = "Alligator Leather"
+    # OVERRIDE: Force strap_bracelet_material if text explicitly mentions two-tone combinations
+    if "rose gold" in text_lower and ("steel" in text_lower or "stainless" in text_lower):
+        attrs["strap_bracelet_material"] = "Rose Gold and Stainless Steel"
+    elif "yellow gold" in text_lower and ("steel" in text_lower or "stainless" in text_lower):
+        attrs["strap_bracelet_material"] = "Yellow Gold and Stainless Steel"
+    elif attrs.get("strap_bracelet_type") == "Bracelet" and "Stainless Steel" in (attrs.get("case_material") or ""):
+        attrs["strap_bracelet_material"] = "Stainless Steel"
+    elif "alligator" in text_lower:
+        attrs["strap_bracelet_material"] = "Alligator Leather"
 
-    if attrs.get("strap_color") is None:
-        if attrs.get("strap_bracelet_material") == "Stainless Steel" or attrs.get("strap_bracelet_material") == "Rose Gold and Stainless Steel": attrs["strap_color"] = "Silver"
-        elif "leather strap" in text_lower or "alligator" in text_lower:
-            if "black" in text_lower: attrs["strap_color"] = "Black"
-            elif "brown" in text_lower: attrs["strap_color"] = "Brown"
+    # OVERRIDE: Force strap_color if text explicitly mentions it
+    if attrs.get("strap_bracelet_material") == "Stainless Steel" or attrs.get("strap_bracelet_material") == "Rose Gold and Stainless Steel": 
+        attrs["strap_color"] = "Silver"
+    elif "leather strap" in text_lower or "alligator" in text_lower:
+        if "black" in text_lower: attrs["strap_color"] = "Black"
+        elif "brown" in text_lower: attrs["strap_color"] = "Brown"
 
     if attrs.get("movement_type") is None:
         if "perpetual" in text_lower or "automatic" in text_lower or "self-winding" in text_lower or "auto mvt" in text_lower or "automatic winding" in text_lower:
