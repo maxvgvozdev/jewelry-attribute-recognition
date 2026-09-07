@@ -94,3 +94,9 @@ EXAMPLE OF A COMPLETED EXTRACTION:
   "watch_size": "L",
   "treatment": null
 }
+CRITICAL RULES FOR WATCH EXTRACTION:
+
+NUMERIC FIELDS: For case_diameter, case_thickness_mm, strap_bracelet_width_mm, power_reserve_hour, and water_resistance_m, extract ONLY the numeric value as a string (e.g., if "42mm" is visible, output "42"). Use null if not visible.
+TEXT FIELDS: For calibre, precision, certification, msrp_price, year_produced, treatment, watch_brand, and watch_collection, output the exact text string visible on the dial or case back.
+VOCABULARY: For the other fields, output exactly what you see in the image. Do not invent synonyms. If a value is not visible, use null.
+Now, analyze the current watch image and output the JSON code block:"""
