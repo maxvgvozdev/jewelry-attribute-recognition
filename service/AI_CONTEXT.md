@@ -1,36 +1,37 @@
-Project Context: Jewelry & Watch Attribute Recognition API
+AI_CONTEXT.md: Project Context: Jewelry & Watch Attribute Recognition API
 1. How to Transfer Context to a New Chat
 To resume work on this project in a new AI chat (without losing state), paste this AI_CONTEXT.md file first. Then, paste the contents of the following files from your GitHub repository:
 
-service/api.py (Main FastAPI application, Pydantic models, PDF parsing, BC365 strict validation logic).
+service/api.py (Main FastAPI application, Pydantic models, PDF parsing, BC365 strict validation logic, Text Heuristics).
 service/firecrawl_proxy.py (Standalone script for Firecrawl V2 web search/scraping).
-service/vision_client.py (Client for communicating with Spark AI / Ollama).
-service/config.py (Vision AI extraction prompt).
+service/vision_client.py (Client for communicating with Spark AI / Ollama. Forces "format": "json").
+service/config.py (Vision AI extraction prompts for both Jewelry and Watches).
 service/requirements.txt (Python dependencies).
 service/deploy.ps1 (PowerShell deployment script for Production).
 service/deploy_test.ps1 (PowerShell deployment script for Testing).
 Prompt to use in the new chat: "Here is my AI_CONTEXT.md file and the associated project code. Read this to understand our project state. Do not write any code yet, just acknowledge."
 
 2. Overview
-Goal: A FastAPI-based service that extracts specific jewelry AND watch attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models (Ollama) to analyze product images and text.
-Target Stack: Python 3, FastAPI, Uvicorn, PyMuPDF, Pillow, Firecrawl API, Ollama (remote Vision AI on "Spark").
-Deployment: Code is modified on a laptop in VS Code, pushed to GitHub, and deployed on a Windows Server 2025 via PowerShell scripts that pull code and restart Scheduled Tasks.
+Goal: A FastAPI-based service that extracts specific jewelry AND watch attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models (Ollama) to analyze product images and text.Target Stack: Python 3, FastAPI, Uvicorn, PyMuPDF, Pillow, Firecrawl API, Ollama (remote Vision AI on "Spark").Deployment: Code is modified on a laptop in VS Code, pushed to GitHub, and deployed on a Windows Server 2025 via PowerShell scripts that pull code and restart Scheduled Tasks.
+
 3. Dual-Instance Architecture (Server Setup)
 To develop new features safely, the Windows Server runs two instances of the service simultaneously:
 
 Production Instance: Folder: C:\Deploy\jewelry-attribute-recognition\service | Port: 8000 | Script: deploy.ps1 | Task: JewelryAgentAPI (Live BC integration).
-Test Instance: Folder: C:\Deploy\jewelry-attribute-recognition-test\service | Port: 8001 | Script: deploy_test.ps1 | Task: JewelryAgentAPI_Test (Used for testing new features like Watch support).
+Test Instance: Folder: C:\Deploy\jewelry-attribute-recognition-test\service | Port: 8001 | Script: deploy_test.ps1 | Task: JewelryAgentAPI_Test (Used for testing new features).
 4. Business Workflow (BC Integration)
 This service operates in a 2-step workflow orchestrated by Microsoft Business Central:
 
-STEP 1: Invoice Parsing (POST /api/invoice/parse) - BC sends a vendor invoice PDF. Service extracts Vendor Info, Line Items, and pre-filled attributes.
-STEP 2: Item Enrichment (POST /api/jewelry/recognize) - BC sends Item Number, Brand, URL, and pre-filled attributes. Service scrapes web/images and fills missing attributes.
+STEP 1: Invoice Parsing (POST /api/invoice/parse) - BC sends a vendor invoice PDF. Service extracts Vendor Info, Line Items, and pre-filled attributes. The AI is prompted to identify if the line item is jewelry or watch.
+STEP 2: Item Enrichment (POST /api/jewelry/recognize) - BC sends Item Number, Brand, URL, Category, and pre-filled attributes. Service scrapes web/images and fills missing attributes.
 5. Key Logic & Business Rules
-Category Routing: The service will route logic based on a category field (jewelry or watch).
-Strict Validation: The AI's output is forced to match exact BC365 master data strings. Case-insensitive exact matching, then longest substring match. If no match, returns null.
+Category Routing: api.py routes logic based on a category field (jewelry or watch). This determines which Pydantic model, Vision prompt, and BC365 validation map is used.
+Strict Validation: The AI's output is forced to match exact BC365 master data strings. Case-insensitive exact matching, then longest substring match. If no match, returns null. Handled by _normalize_to_bc365().
 Invoice Pre-fill Priority: Pre-filled attributes from Step 1 are locked in first. Vision AI in Step 2 only fills missing fields.
+Text Heuristics Fallback: _build_watch_attributes_from_text_and_vision contains heavy regex and keyword matching (e.g., "PINK GOLD & ST CASE" -> Rose Gold and Stainless Steel). If the Vision AI fails or hallucinates, the text heuristics will override it using the Firecrawl web text.
+Smart JSON Repair: _extract_json_from_text can repair truncated JSON objects returned by the Vision AI by automatically appending missing closing braces.
 Smart PDF Filtering (_render_pdf_to_images): Skips legal/T&C pages and limits to 2 pages to prevent AI timeouts.
-Vision AI: Uses default:latest (local Qwen multimodal on Spark) for both PDF parsing and image analysis. Timeout is 600s.
+Vision AI: Uses default:latest (local Qwen multimodal on Spark) for both PDF parsing and image analysis. vision_client.py enforces "format": "json" to prevent LLM conversational rambling. Timeout is 600s.
 6. BC365 Schema: Jewelry (31 Attributes)
 Extracts: metal_type, metal_color, stone_primary_color, product_type, gender, center_stone_type, center_stone_shape, side_stone_1_type, side_stone_1_shape, side_stone_2_type, side_stone_2_shape, engagement_set_type, engagement_ring_type, wedding_band_type, wedding_band_setting_type, wedding_band_stone_continuity, fashion_ring_type, earring_type, necklace_type, bracelet_type, accessory_type, theme, occasion, jewelry_shape, motif, finishing_type, estate_period, holiday_code, chain_type, clasp_type, earring_back.
 
@@ -38,6 +39,7 @@ Extracts: metal_type, metal_color, stone_primary_color, product_type, gender, ce
 Extracts: functions_complications, watch_style, movement_type, display_type, case_diameter, case_thickness_mm, case_shape, dial_color, case_back, dial_motif, watch_display_number_type, dial_embellishment, case_material, strap_bracelet_type, strap_bracelet_material, case_color, strap_color, strap_secondary_color, strap_bracelet_width_mm, crystal_material, special_functions, power_reserve_hour, water_resistance_m, clasp_type, watch_brand, watch_collection, bezel_type, winding_crown, calibre, precision, certification, gender, msrp_price, year_produced, limited_production, watch_size, treatment.
 
 Valid Watch Options (Strict BC365 Mapping):
+
 functions_complications: Date, Day, Centre Hour, Instantaneous Date, Minute and Second Hand, Stop-seconds for precise time setting, Power Reserve, Month, Moon Phase, Second Hand, Chronograph, Chronometer, minute repeater, perpetual calendar, alarm, split chronometer, annual calendar, tourbillon, GMT, World Time
 watch_style: Casual, Dress, Fashion, Luxury, Sport, Diver, Pocket
 movement_type: Automatic, Hand, Quartz, Manual, Spring Drive, Self Winding, Solar, Eco-Drive, Mechanical/Manual, Automatic AND Manual, Automatic/Self Winding
@@ -61,14 +63,16 @@ bezel_type: Compass, Countdown, Count Up, Diamond, Fluted, GMT, Pattern, Plain, 
 winding_crown: Domed, Triplock, Twinlock
 gender: Baby, Gents, Ladies, Unisex
 limited_production: Yes, No
-watch_size: L, M, S, XL, XS, mini
-Text/Numeric Fields: case_diameter, case_thickness_mm, strap_bracelet_width_mm, power_reserve_hour, water_resistance_m, calibre, precision, certification, msrp_price, year_produced, treatment, watch_brand, watch_collection
+watch_size: L, M, S, XL, XS, miniText/Numeric Fields: case_diameter, case_thickness_mm, strap_bracelet_width_mm, power_reserve_hour, water_resistance_m, calibre, precision, certification, msrp_price, year_produced, treatment, watch_brand, watch_collection
 8. Rules for AI Assistant
-Always maintain the strict BC365 schema. Do not invent new fields or valid options.
+Always maintain the strict BC365 schema for BOTH jewelry and watches. Do not invent new fields or valid options.
 Preserve the _normalize_to_bc365 strict matching logic.
 Ensure firecrawl_proxy.py remains a standalone script executed via subprocess.run.
 When writing AL code for Business Central, always use HttpClient.Timeout(600000).
+Vision prompts should be kept concise to avoid token truncation. Rely on Python's _normalize_to_bc365 for strict mapping, not the prompt itself.
+Text heuristics in _build_attributes_from_text_and_vision are critical for handling messy vendor invoice abbreviations and should override Vision AI output when high-confidence keywords are found.
 9. Current State & Progress
 Jewelry Step 1 & 2 are fully working on Production (Port 8000).
-Test Instance is running on Port 8001.
-NEXT PHASE: Add category routing to api.py. If category == "watch", use the new Watch Pydantic model, Watch Vision Prompt, and VALID_BC365_WATCH_OPTIONS mapping.
+Watch Step 1 & 2 are fully implemented and validated on the Test Instance (Port 8001).
+The Watch schema (40+ attributes), strict validation, text heuristics fallback, and JSON repair logic are all functioning perfectly.
+NEXT PHASE: Deploy the Watch features to Production using deploy.ps1.
