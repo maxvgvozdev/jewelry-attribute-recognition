@@ -42,7 +42,7 @@ class WorkflowTests(unittest.TestCase):
         context = self.search.call_args.args[1]
         self.assertEqual(context["attributes"]["center_stone_type"], "Blue Sapphire")
         self.assertEqual(context["attributes"]["product_type"], "Bracelets")
-        self.assertEqual(context["description"], self.payload.description)
+        self.assertEqual(context["description"], "")
         self.assertEqual(result["evidence"]["text"], "Silver bracelet")
         self.assertNotEqual(result["confidence"]["overall"], "high")
 

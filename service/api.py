@@ -80,11 +80,9 @@ class JewelryRequest(BaseModel):
     upc_code: str = Field("", json_schema_extra={"examples": ["192740527920"]})
     source_url: str = Field("", json_schema_extra={"examples": ["https://www.cartier.com/"]})
     
-    manufacturer_item_number: str = ""
-    description: str = ""
     pre_filled_attributes: Optional[Dict[str, Any]] = Field(None, description="Attributes pre-extracted from invoice")
 
-    @field_validator("vendor_item_number", "upc_code", "source_url", "manufacturer_item_number", "description", mode="before")
+    @field_validator("vendor_item_number", "upc_code", "source_url", mode="before")
     @classmethod
     def _empty_to_str(cls, v):
         if v is None: return ""
@@ -179,9 +177,6 @@ class WatchAttributes(BaseModel):
 class InvoiceLineItem(BaseModel):
     sku: Optional[str] = None
     sku_alternate: Optional[str] = None
-    manufacturer_item_number: Optional[str] = None
-    upc_code: Optional[str] = None
-    category: Optional[str] = None
     description: Optional[str] = None
     brand: Optional[str] = None
     qty: Optional[float] = None
@@ -350,8 +345,6 @@ Do not extract legal text, payment terms, shipping terms, warranty statements, d
 For each purchased product line item, extract:
 - sku: Vendor product identifier (Article, Item, Style, SKU). Do not use PO/SO/Tracking numbers.
 - sku_alternate: Second product code linked to the same line (e.g., packing-list code). Null if absent.
-- manufacturer_item_number: Manufacturer reference explicitly labeled Comm. Ref., MPN, or manufacturer style. Join a reference wrapped across lines in the same cell without spaces; never join an unrelated code. Preserve sku/Item No separately. Null if absent.
-- upc_code: UPC/EAN/GTIN printed for this line, as a string preserving leading zeros. Never derive it from Item No. Null if absent.
 - description: Clean product description. Normalize line breaks to spaces.
 - brand: The specific brand or manufacturer of the item (e.g., Herco, David Yurman, Cartier). Infer from the description if necessary. Null if not present.
 - category: Must be either "jewelry" or "watch". Use "watch" if the item is a timepiece.
@@ -370,7 +363,7 @@ Shape:
 {
   "vendor_name": null, "invoice_number": null, "invoice_date": null, "currency": null,
   "line_items": [
-    {"sku": null, "sku_alternate": null, "manufacturer_item_number": null, "upc_code": null, "description": null, "brand": null, "category": "jewelry", "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
+    {"sku": null, "sku_alternate": null, "description": null, "brand": null, "category": "jewelry", "qty": null, "unit": null, "weight": null, "unit_price": null, "price": null, "price_basis": null}
   ],
   "subtotal": null, "freight": null, "total": null, "needs_review": false, "review_reason": null
 }"""
@@ -1206,7 +1199,7 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
     if upc_code:
         upc_result = _check_upc(upc_code)
         if not upc_result.get("found"):
-            if not vendor_item_number and not payload.manufacturer_item_number and not source_url:
+            if not vendor_item_number and not source_url:
                 raise HTTPException(status_code=404, detail=f"UPC {upc_code} not found in UPC Item Database (upcitemdb.com).")
             confidence_notes.append(f"UPC {upc_code} is not present in UPC Item Database; item discovery continued using vendor_item_number.")
         else:
@@ -1220,24 +1213,21 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         search_attributes.setdefault("product_type", payload.category)
     context = make_context(
         brand=brand, vendor_item_number=vendor_item_number,
-        manufacturer_item_number=payload.manufacturer_item_number,
-        upc_code=upc_code, description=payload.description,
+        manufacturer_item_number="",
+        upc_code=upc_code, description="",
         category=category, attributes=search_attributes)
     try:
         if source_url:
             discovery = _run_firecrawl_scrape(source_url, context)
         else:
             discovery = _run_firecrawl_search(
-                f"{brand} {payload.manufacturer_item_number or vendor_item_number or upc_code}", context)
+                f"{brand} {vendor_item_number or upc_code}", context)
     except Exception:
         logger.exception("Product discovery failed")
         raise HTTPException(status_code=502, detail="Product discovery service failed; retry later.")
     candidates = discovery.get("data") or []
     if not candidates or not candidates[0].get("identity", {}).get("verified"):
-        raise HTTPException(status_code=404, detail={
-            "message": "No product page could be confirmed against the supplied identifiers and BC/invoice context. Supply the manufacturer reference, UPC or a matching source_url.",
-            "rejected_candidates": discovery.get("rejected", []),
-        })
+        raise HTTPException(status_code=404, detail="No product page could be confirmed against the supplied identifiers and BC/invoice attributes. Check vendor_item_number, upc_code and source_url.")
     candidate = candidates[0]
     identity = candidate["identity"]
     resolved_url = candidate.get("url", "")
@@ -1281,7 +1271,7 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
     
     # Invoice text/explicit BC attributes precede Vision; keep raw page evidence separate.
     invoice_attrs = _build_attributes_from_text_and_vision(
-        brand, payload.description, [], item_number or upc_code, pre_filled_attrs, category)
+        brand, "", [], item_number or upc_code, pre_filled_attrs, category)
     attrs_dict = _build_attributes_from_text_and_vision(
         brand, page_text, [], item_number or upc_code, invoice_attrs, category)
     attrs_dict = _build_attributes_from_text_and_vision(
@@ -1444,7 +1434,7 @@ def parse_invoice(file: UploadFile = File(...)):
                     item_category = "jewelry"
             
             item_attrs = _build_attributes_from_text_and_vision(
-                brand=raw_item.get("brand") or vendor_name,
+                brand=vendor_name,
                 text=desc,
                 vision_results=[],
                 item_number=sku,
@@ -1452,14 +1442,6 @@ def parse_invoice(file: UploadFile = File(...)):
                 category=item_category
             )
             
-            extracted_attrs = raw_item.get("attributes")
-            if isinstance(extracted_attrs, dict):
-                for key, value in extracted_attrs.items():
-                    if key in item_attrs and value is not None:
-                        normalized = _normalize_to_bc365(key, str(value), item_category)
-                        if normalized is not None:
-                            item_attrs[key] = normalized
-            raw_item["category"] = item_category
             raw_item["attributes"] = item_attrs
             processed_items.append(InvoiceLineItem(**raw_item))
             
