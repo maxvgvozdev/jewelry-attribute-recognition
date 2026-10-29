@@ -195,3 +195,29 @@ Invoke-RestMethod -Method Post -Uri http://<SERVER_IP>:8001/api/jewelry/recogniz
 
 Deployment network update (2026-10-29)
 The working BC implementation is maintained separately; AL snippets here are examples, not the deployed integration. API request/response contracts are unchanged by the VPN migration. On the future company server, BC and API will be colocated: use http://127.0.0.1:8000 (test: 8001) only if calls execute in the same host network. Remote or containerized BC requires separately verified addressing and firewall rules. API -> Spark uses http://10.77.0.2:11434 inside the administrator-managed encrypted VPN, replacing Tailscale. See service/ARCHITECTURE_AND_DEPLOYMENT.md for the migration and validation sequence.
+
+
+## Product search using existing BC/invoice attributes
+
+The BC integration is considered correct and remains unchanged. No request or response fields are added, removed or renamed. Invoice parsing models, prompts and handler remain unchanged. BC continues to merge invoice/existing-item values and send the existing pre_filled_attributes object.
+
+The service now uses non-null product type, stone, stone color, watch material/collection/brand and recognized metal code as search qualifiers alongside the existing brand, vendor_item_number and upc_code. Legacy category=Bracelets remains accepted as a product-type qualifier. No new description or manufacturer-reference request field is introduced. Only information actually present in the existing request can participate in search.
+
+Candidate pages require a product SKU/MPN/UPC matching an existing request identifier and corroborated by raw page content, plus the brand. Known product type, silver-vs-gold and selected gemstone contradictions reject candidates. This is a limited conservative rule set, not full semantic matching. A source_url is checked by the same rules, so URL-only calls without a verifiable identifier can return 404. No-match responses keep the existing detail string error structure. More queries/scrapes add latency and may make the existing 600-second BC timeout insufficient for the full pipeline.
+
+Explicit pre_filled_attributes are prioritized over page/vision output; page text fills remaining fields before Vision, followed by normalization. evidence.text excludes model output. The existing confidence.overall is capped at medium rather than high merely from image availability. No new response keys are introduced. Full field-level provenance is not implemented.
+
+Validation: python -m unittest discover -s tests -v. Re-run the exact supplied John Hardy request on test port 8001: BU98941 must not be accepted for 254069. A correct page can be accepted only if its identity is evidenced; otherwise return 404 rather than attributes from another item. Test real Firecrawl/BC before production rollout.
+
+
+## UPCitemdb enrichment (same BC exchange contract)
+
+Use the official structured lookup API instead of scraping the public HTML page. With no UPCITEMDB_API_KEY configured, use /prod/trial/lookup without credentials. An optional server-side UPCITEMDB_API_KEY uses /prod/v1/lookup; no BC request changes. Documentation: https://www.upcitemdb.com/wp/docs/main/development/getting-started/ and https://www.upcitemdb.com/wp/docs/main/development/responses/ . The provider explicitly does not guarantee accuracy.
+
+Validate GTIN length/check digit and exact barcode equivalence (UPC/EAN zero-padding only; do not equate packaging-level GTINs). Reject ambiguous records, brand disagreement and known context conflicts. Read title, description, brand, model, category, color, size, dimension, weight, image URLs and merchant offers. Use title/model to enrich queries and merchant links as candidates; scrape and verify linked pages before accepting them. If no web candidate is verified, a checked UPC record can itself supply text and images. Explicit source_url failures are not silently replaced with the UPC record. History prices and offer prices are retained internally but are not treated as invoice prices or MSRP. Generic color/size fields are not blindly mapped to metal/stone/watch fields.
+
+BC/invoice prefilled attributes retain priority; UPC/page text and Vision fill missing fields under the existing schema. Provenance is placed in existing confidence.notes and resolved_item_url/evidence fields. UPC records are secondary evidence, not independent proof of all extracted attributes. Only a supplied upc_code triggers lookup; vendor_item_number is never converted into a UPC.
+
+Bounded in-process cache: up to 256 keys, successful lookups 1 hour, unavailable/missing results 60 seconds. One 15-second lookup attempt, no automatic retries on quota errors. Cache is not shared between workers or instances, and does not enforce global provider quotas. Missing/quota/network failures continue other discovery when possible. Existing BC timeout risks from web/Vision processing remain.
+
+Validation: 26 offline tests passed, including API schema preservation, UPC/EAN equivalence, mismatch/ambiguity rejection, brand/material conflicts, cache, lookup failure, search propagation and UPC fallback. A live free lookup of 825429254069 did not return an unambiguous matching record; no successful real-record enrichment or Windows end-to-end test is claimed. Test on 8001 before deployment to the BC-connected instance.

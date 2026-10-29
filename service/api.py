@@ -205,15 +205,16 @@ class InvoiceResponse(BaseModel):
 def _firecrawl_available() -> bool:
     return FIRECRAWL_SCRIPT.exists() and FIRECRAWL_SCRIPT.is_file()
 
-def _run_firecrawl_search(query: str) -> Dict[str, Any]:
+def _run_firecrawl_search(query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not FIRECRAWL_SCRIPT.exists():
         raise RuntimeError(f"Firecrawl proxy script not found: {FIRECRAWL_SCRIPT}")
     try:
         result = subprocess.run(
-            [sys.executable, str(FIRECRAWL_SCRIPT), "search", query],
+            [sys.executable, str(FIRECRAWL_SCRIPT), "search", query, "--context"],
+            input=json.dumps(context or {}),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=450,
             check=False,
         )
         if result.returncode != 0:
@@ -223,15 +224,16 @@ def _run_firecrawl_search(query: str) -> Dict[str, Any]:
         logger.exception("Firecrawl search error")
         raise RuntimeError(f"Search failed: {exc}")
 
-def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
+def _run_firecrawl_scrape(url: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not FIRECRAWL_SCRIPT.exists():
         raise RuntimeError(f"Firecrawl proxy script not found: {FIRECRAWL_SCRIPT}")
     try:
         result = subprocess.run(
-            [sys.executable, str(FIRECRAWL_SCRIPT), "scrape", url],
+            [sys.executable, str(FIRECRAWL_SCRIPT), "scrape", url, "--context"],
+            input=json.dumps(context or {}),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=450,
             check=False,
         )
         if result.returncode != 0:
@@ -241,21 +243,8 @@ def _run_firecrawl_scrape(url: str) -> Dict[str, Any]:
         raise RuntimeError(f"Scrape failed: {exc}")
 
 def _check_upc(upc_code: str) -> Dict[str, Any]:
-    if not upc_code:
-        return {}
-    url = f"https://www.upcitemdb.com/upc/{upc_code}"
-    try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        html = resp.text
-        if "currently has no record in our database" in html:
-            return {"found": False, "url": url}
-        title_m = re.search(r"<title>\s*UPC\s+\d+\s*-\s*(.*?)\s*\|\s*upcitemdb\.com\s*</title>", html)
-        title = title_m.group(1).strip() if title_m else ""
-        return {"found": bool(title), "title": title, "url": url}
-    except Exception as exc:
-        logger.warning("UPC check failed: %s", exc)
-        return {"found": False, "error": str(exc), "url": url}
+    from service.upc_lookup import lookup
+    return lookup(upc_code)
 
 def _download_image(url: str, dest: Path, referer: str = "") -> str:
     try:
@@ -1194,85 +1183,60 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
     page_text = ""
     item_number = vendor_item_number
 
-    if upc_code:
-        upc_result = _check_upc(upc_code)
-        if not upc_result.get("found"):
-            if not vendor_item_number:
-                raise HTTPException(status_code=404, detail=f"UPC {upc_code} not found in UPC Item Database (upcitemdb.com).")
-            confidence_notes.append(f"UPC {upc_code} is not present in UPC Item Database; item discovery continued using vendor_item_number.")
-        else:
-            confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
+    upc_result = _check_upc(upc_code) if upc_code else {}
+    if upc_code and not upc_result.get("found"):
+        confidence_notes.append("UPC lookup unavailable, invalid or no exact record; continuing other discovery.")
 
-    if source_url:
-        resolved_url = source_url
-        confidence_notes.append(f"Using provided source_url directly: {resolved_url}")
-    else:
-        if vendor_item_number:
-            search_query = f"{brand} {vendor_item_number}"
-        elif upc_code:
-            search_query = f"{brand} {upc_code}"
+    # Pass BC/invoice context to search AND candidate verification.
+    from service.product_identity import make_context
+    search_attributes = dict(pre_filled_attrs or {})
+    if category not in ("jewelry", "watch"):
+        # Legacy BC clients send a product type in category.
+        search_attributes.setdefault("product_type", payload.category)
+    context = make_context(
+        brand=brand, vendor_item_number=vendor_item_number,
+        manufacturer_item_number="",
+        upc_code=upc_code, description="",
+        category=category, attributes=search_attributes)
+    from service.upc_lookup import candidate_from_record
+    upc_candidate = candidate_from_record(upc_result, context)
+    if upc_result.get("found") and not upc_candidate:
+        confidence_notes.append("UPC record conflicts with BC/invoice context or lacks brand confirmation; ignored.")
+    if upc_candidate:
+        context["upc_record"] = upc_result
+        confidence_notes.append("Exact UPCitemdb record matched the supplied brand and passed context checks.")
+    try:
+        if source_url:
+            discovery = _run_firecrawl_scrape(source_url, context)
         else:
-            raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
-            
-    image_urls = []
-    
-    if not source_url:
-        if vendor_item_number:
-            search_query = f"{brand} {vendor_item_number}"
-        elif upc_code:
-            search_query = f"{brand} {upc_code}"
-        else:
-            raise HTTPException(status_code=400, detail="Either vendor_item_number, upc_code, or source_url must be provided.")
-
-        if _firecrawl_available():
-            try:
-                search_result = _run_firecrawl_search(search_query)
-                items = search_result.get("data", []) or []
-                if items:
-                    resolved_url = items[0].get("url", "")
-                    page_text = items[0].get("description", "") or ""
-                    firecrawl_images = items[0].get("images", [])
-                    if firecrawl_images:
-                        image_urls = firecrawl_images
-                        confidence_notes.append("Extracted product data and images via Firecrawl V2.")
-                    else:
-                        confidence_notes.append("Firecrawl V2 extracted text, but 0 images.")
-            except Exception as exc:
-                confidence_notes.append(f"Firecrawl proxy failed; using direct HTTP fallback only. ({exc})")
-        else:
-            confidence_notes.append("Firecrawl is not configured; using direct HTTP fallback only.")
-                    
-    if not resolved_url:
-        brand_lower = brand.lower()
-        item_to_use = vendor_item_number or upc_code
-        if brand_lower == 'cartier' and item_to_use:
-            resolved_url = f"https://www.cartier.com/en-us/jewelry/-/{item_to_use}.html"
-            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Cartier URL: {resolved_url}")
-        elif brand_lower == 'tiffany' and item_to_use:
-            resolved_url = f"https://www.tiffany.com/jewelry/-/{item_to_use}"
-            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed Tiffany URL: {resolved_url}")
-        elif brand_lower == 'david yurman' and item_to_use:
-            resolved_url = f"https://www.davidyurman.com/-{item_to_use}.html"
-            confidence_notes.append(f"Firecrawl search failed. Dynamically constructed DY URL: {resolved_url}")
-        elif upc_code:
-            resolved_url = f"https://www.upcitemdb.com/upc/{upc_code}"
-            confidence_notes.append(f"Firecrawl search failed. Falling back to UPC database.")
-        else:
-            raise HTTPException(status_code=404, detail=f"Firecrawl found 0 search results for '{brand} {vendor_item_number}'. Please provide the exact 'source_url' parameter in the payload.")
-
-    if not image_urls and resolved_url:
-        try:
-            confidence_notes.append(f"Search yielded no images. Attempting direct scrape of: {resolved_url}")
-            scrape_result = _run_firecrawl_scrape(resolved_url)
-            scrape_items = scrape_result.get("data", [])
-            if scrape_items:
-                if not page_text:
-                    page_text = scrape_items[0].get("description", "") or ""
-                image_urls = scrape_items[0].get("images", [])
-                if image_urls:
-                    confidence_notes.append("Direct scrape fallback successfully extracted product images.")
-        except Exception as exc:
-            confidence_notes.append(f"Direct scrape fallback failed: {exc}")
+            discovery = _run_firecrawl_search(
+                f"{brand} {vendor_item_number or upc_code}", context)
+    except Exception:
+        logger.exception("Product discovery failed")
+        if not upc_candidate:
+            raise HTTPException(status_code=502, detail="Product discovery service failed; retry later.")
+        discovery = {"data": []}
+        confidence_notes.append("Web discovery failed; using the checked UPCitemdb record.")
+    candidates = discovery.get("data") or []
+    if not candidates and upc_candidate and not source_url:
+        candidates = [upc_candidate]
+    if not candidates or not candidates[0].get("identity", {}).get("verified"):
+        raise HTTPException(status_code=404, detail="No product page could be confirmed against the supplied identifiers and BC/invoice attributes. Check vendor_item_number, upc_code and source_url.")
+    candidate = candidates[0]
+    identity = candidate["identity"]
+    resolved_url = candidate.get("url", "")
+    page_text = candidate.get("description", "") or ""
+    if upc_candidate and candidate is not upc_candidate:
+        page_text = upc_candidate["description"] + "\n" + page_text
+    image_urls = candidate.get("images") or []
+    if not image_urls and upc_candidate:
+        image_urls = upc_candidate.get("images") or []
+        confidence_notes.append("Image source: matched UPCitemdb record.")
+    confidence_notes.append("Source: " + ("UPCitemdb exact barcode record" if candidate is upc_candidate else "verified product page"))
+    confidence_notes.extend(identity.get("warnings", []))
+    # This flag now represents two independent supplied identifier kinds,
+    # rather than merely the presence of an input code.
+    lookup.cross_confirmed = len({context.get(k) for k in identity.get("matched_identifiers", []) if context.get(k)}) >= 2
 
     try:
         from urllib.parse import urlparse
@@ -1296,24 +1260,37 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
                 
             vision = _analyze_image(local_path, prompt)
             vision_results.append(vision)
-            images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"{view_type.title()} view of {brand} {item_number or upc_code}"))
+            images.append(ImageEvidence(url=img_url, view_type=view_type, alt_text=f"Product gallery image {idx} from verified page"))
         except Exception as exc:
             error_msg = f"Image processing/analysis failed for {img_url}: {exc}"
             logger.warning(error_msg)
             confidence_notes.append(error_msg)
 
-    combined_text = f"{page_text} {' '.join(v.get('analysis','') for v in vision_results)}"
+    combined_text = page_text
     
+    # Invoice text/explicit BC attributes precede Vision; keep raw page evidence separate.
+    invoice_attrs = _build_attributes_from_text_and_vision(
+        brand, "", [], item_number or upc_code, pre_filled_attrs, category)
     attrs_dict = _build_attributes_from_text_and_vision(
-        brand, page_text, vision_results, item_number or upc_code, pre_filled_attrs, category
-    )
+        brand, page_text, [], item_number or upc_code, invoice_attrs, category)
+    attrs_dict = _build_attributes_from_text_and_vision(
+        brand, "", vision_results, item_number or upc_code, attrs_dict, category)
+    # Reapply explicit prefill after watch heuristics as well.
+    for key, value in (pre_filled_attrs or {}).items():
+        if key in attrs_dict and value is not None:
+            attrs_dict[key] = _normalize_to_bc365(key, str(value), category)
+    if category != "watch" and attrs_dict.get("product_type") == "Bracelets":
+        attrs_dict["necklace_type"] = None
+    # Normalize every final value, including heuristic assignments.
+    attrs_dict = {key: _normalize_to_bc365(key, str(value), category) if value is not None else None
+                  for key, value in attrs_dict.items()}
 
     return {
         "item": {"brand": brand, "vendor_item_number": vendor_item_number, "upc_code": upc_code, "source_url": source_url, "resolved_item_url": resolved_url, "category": category},
         "evidence": {"images": [img.dict() for img in images], "text": combined_text[:2000]},
         "attributes": attrs_dict,
         "lookup": lookup.dict(),
-        "confidence": {"overall": "high" if images else "low", "notes": confidence_notes},
+        "confidence": {"overall": "medium" if images else "low", "notes": confidence_notes},
     }
 
 

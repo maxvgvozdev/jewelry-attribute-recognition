@@ -80,3 +80,11 @@ NEXT PHASE: Deploy the Watch features to Production using deploy.ps1.
 
 10. VPN migration status (2026-10-29)
 See ARCHITECTURE_AND_DEPLOYMENT.md, VPN migration section, for current operational instructions. Administrator-managed VPN replaces Tailscale: Windows 10.77.0.1 -> Spark http://10.77.0.2:11434. TCP, /api/tags and text generation on default:latest passed. Image inference and full BC checks remain pending. No HTTPS is planned inside this encrypted VPN. BC and API will share the company server; host-local BC calls may use loopback HTTP. Migration to the company server is pending. Use Scheduled Tasks, not the legacy pywin32 service. start_api.cmd sets VPN URL and the instance port explicitly; configure_task.ps1 updates an existing stopped task with XML backup. Validate Test (8001) before changing the BC-connected Live task (8000). Existing model/provider/credentials and API contracts are preserved. Earlier statements that all functionality is fully validated are historical notes, not acceptance of this migration.
+
+
+11. Product search update
+BC integration is assumed correct. Exchange schemas remain unchanged, including invoice output. Search and candidate verification now use existing pre_filled_attributes along with brand/vendor_item_number/upc_code; no new public fields. Prioritize explicit BC/invoice attributes over page/Vision values. See integration_with_BC.md for stricter no-match behavior and test requirements. Changes are pending test deployment.
+
+
+12. UPCitemdb integration update
+Use the structured official lookup API, free trial by default (optional server-side UPCITEMDB_API_KEY for an existing paid account). Exact barcode and brand/context checks gate secondary UPC data. Use model/title/merchant links in discovery; verified UPC description/images can provide fallback. Keep all BC request/response models unchanged and explicit prefill priority intact. See integration_with_BC.md for cache, quotas, validation and deployment limitations. No confirmed UPC record was obtained for the sample 825429254069 during development.
