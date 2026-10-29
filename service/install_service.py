@@ -1,3 +1,7 @@
+"""Legacy pywin32 installer; not used by the current Scheduled Task deployment.
+See ARCHITECTURE_AND_DEPLOYMENT.md and configure_task.ps1.
+Do not use this file to start the current API instance.
+"""
 import sys
 import pathlib
 import subprocess

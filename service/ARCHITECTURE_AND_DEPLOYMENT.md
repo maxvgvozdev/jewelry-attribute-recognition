@@ -4,7 +4,7 @@ This document outlines the architecture of the Jewelry & Watch Attribute Recogni
 1. Architecture Overview
 The service is a synchronous workflow engine wrapped in a FastAPI REST interface, designed to integrate with Microsoft Business Central via a 2-step process (Invoice Parsing -> Item Enrichment).
 
-API Layer: FastAPI + Uvicorn (async endpoints wrapping synchronous heavy-lifting).
+API Layer: FastAPI + Uvicorn; the main POST handlers use synchronous def functions.
 Category Routing: api.py routes logic based on a category field (jewelry or watch). This determines which Pydantic model, Vision prompt, and BC365 validation map is used.
 Workflow Engine (run_jewelry_workflow): Executes a multi-step pipeline:
 Validates provided identifiers (UPC / Vendor Item Number).
@@ -30,13 +30,13 @@ Task Name: JewelryAgentAPI_Test
 3. Windows Server 2025 Deployment Strategy
 ⚠️ Important: Why We Use Task Scheduler (Not pywin32)
 
-Historically, Python services on Windows were deployed using pywin32 (pythonservice.exe). This is strictly incompatible with Windows Server 2025.
+Historically, Python services on Windows were deployed using pywin32 (pythonservice.exe). The previous pywin32 installation failed on this server; this is a deployment-specific observation, not a general compatibility claim.
 
 During initial deployment, we discovered that pywin32 fails silently on Server 2025:
 
 It fails to write the required Parameters registry keys (PythonClass, PythonPath, PythonDll).
 Even when keys are manually created, pythonservice.exe fails to load the Python DLL and crashes instantly with exit code 0, leaving no Event Viewer logs.
-The Solution: We use the native Windows Task Scheduler configured to run at startup under the SYSTEM account. This provides the exact same behavior as a Windows Service (auto-restart, background execution, runs before user login) but is 100% reliable and requires zero third-party C++ binaries.
+The Solution: We use the native Windows Task Scheduler configured to run at startup under the SYSTEM account. This provides the exact same behavior as a Windows Service (auto-restart, background execution, runs before user login) without using the previous pythonservice.exe wrapper. Startup and recovery still require validation.
 
 4. Prerequisites
 OS: Windows Server 2025
@@ -47,7 +47,13 @@ Permissions: PowerShell run as Administrator
 These steps are only required the very first time you set up the server. Below is the setup for the Test Instance. Repeat for Production, swapping -test and _Test with the production equivalents, and setting the port to 8000.
 
 5.1. Clone and Setup Environment
-cd C:\Deploygit clone https://github.com/maxvgvozdev/jewelry-attribute-recognition.git jewelry-attribute-recognition-testcd jewelry-attribute-recognition-test\service# Create and activate virtual environmentpython -m venv .venv.\.venv\Scripts\activatepip install -r requirements.txt
+```powershell
+cd C:\Deploy
+git clone https://github.com/maxvgvozdev/jewelry-attribute-recognition.git jewelry-attribute-recognition-test
+cd jewelry-attribute-recognition-test\service
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 5.2. Create Log Directory
 The Task Scheduler needs a directory to write application logs.
 
@@ -55,12 +61,12 @@ powershell
 
 New-Item -ItemType Directory -Force -Path "C:\Deploy\jewelry-attribute-recognition-test\service\logs"
 5.3. Register the Scheduled Task
-Run this block in an elevated PowerShell to register the API as a background task that auto-starts on boot. Note the set JEWELRY_API_PORT=8001 which forces the test instance to use the correct port.
+Run this block in an elevated PowerShell to register the API as a background task that auto-starts on boot. The launcher sets port 8001 and the Spark VPN URL explicitly.
 
 powershell
 
  $Action = New-ScheduledTaskAction -Execute "cmd.exe" `
-    -Argument "/c set JEWELRY_API_PORT=8001 && .venv\Scripts\python.exe api.py >> logs\api.log 2>&1" `
+    -Argument '/d /c ""C:\Deploy\jewelry-attribute-recognition-test\service\start_api.cmd" 8001"' `
     -WorkingDirectory "C:\Deploy\jewelry-attribute-recognition-test\service"
 
  $Trigger = New-ScheduledTaskTrigger -AtStartup
@@ -100,10 +106,10 @@ cd C:\Deploy\jewelry-attribute-recognition\service
 .\deploy.ps1
 What the script does:
 
-Stops the running task.
-Pulls latest code from origin/master.
-Restarts the task.
-Runs a health check to confirm it came up successfully.
+Checks for a clean master checkout and pulls with --ff-only before stopping the task.
+Stops the selected task and updates only its launch action (with an XML backup).
+Restarts via start_api.cmd with an explicit instance port and VPN URL.
+Fails if the API health check does not pass. There is no automatic rollback; /health does not verify Vision inference.
 7. Operations & Maintenance
 Checking Logs
 Because the service runs via cmd.exe, all Python print() and logging statements are routed to a flat file.
@@ -115,7 +121,7 @@ Get-Content C:\Deploy\jewelry-attribute-recognition-test\service\logs\api.log -T
 
 # Watch the log in real-time
 Get-Content C:\Deploy\jewelry-attribute-recognition-test\service\logs\api.log -Wait
-Tip: If the log file gets too large, you can safely delete api.log while the service is running; it will automatically recreate it on the next log write.
+Stop the task before rotating api.log, then restart it. Do not delete an open log file.
 
 Manually Stopping/Starting
 powershell
@@ -135,4 +141,45 @@ Vision AI returns null for all image attributes: The Vision AI prompt may have b
 API returns 500 on /api/jewelry/recognize: Check logs/api.log. This is usually a network timeout to external sites (UPC database, Firecrawl) or a missing dependency in vision_client.py.
 Task State is "Ready" but API is unreachable: The Python process likely crashed on startup (e.g., port already in use, or syntax error in api.py). Check logs/api.log for the Python traceback.
 Port already in use: Find the conflicting process with netstat -ano | findstr :8001 (or 8000) and kill it with taskkill /PID <pid> /F before restarting the task.
-API times out on /api/jewelry/recognize with a local network error: Ensure Tailscale is connected and running on the Windows Server. Run Test-NetConnection -ComputerName 100.88.93.128 -Port 11434. If this fails, the API cannot reach the local Vision AI on the Spark machine.
+API times out on /api/jewelry/recognize with a local network error: Check the administrator-managed VPN. Run Test-NetConnection -ComputerName 10.77.0.2 -Port 11434. If this fails, the API cannot reach the local Vision AI on the Spark machine.
+
+
+## VPN migration (2026-10-29)
+
+All source changes are committed to GitHub first and pulled to the server before use.
+The administrator-managed encrypted VPN replaces Tailscale for Windows API -> Spark.
+Windows VPN IP: 10.77.0.1; Spark VPN IP: 10.77.0.2. The reported /32 settings must be interpreted as host routes, not a shared two-host subnet; routing is managed by the administrator.
+
+- Spark base URL: http://10.77.0.2:11434. HTTP is used inside the encrypted VPN; HTTPS is not part of this migration.
+- Restrict Spark port 11434 to the intended API host via the VPN; do not expose Ollama publicly.
+- BC and API are planned to share the company server. Use http://127.0.0.1:8000 when BC executes in the same host network. Containers require a separate addressing decision.
+- Keep the current API bind setting during testing. On the company server, bind to loopback only if no remote clients require access.
+- Keep existing VISION_MODEL, VISION_PROVIDER and credentials. The current Python default is default:latest, but environment overrides still apply.
+- start_api.cmd explicitly sets VISION_API_URL and JEWELRY_API_PORT for the child process. A changed Machine environment variable alone does not prove a running task uses the new address.
+
+Confirmed: TCP connectivity and Ollama /api/tags over the Spark interface; default:latest returned CONNECTION_OK via /api/generate. Image inference, BC end-to-end processing, operation without Tailscale and reboot recovery remain unverified.
+
+Observed tasks before migration: JewelryAgentAPI is Running with direct python.exe api.py; JewelryAgentAPI_Test is Ready with cmd.exe and no explicit port. Ready means it is not currently running. The legacy stopped Windows service is not the active API launcher. Do not use Start-Service for this deployment.
+
+### Migrate the existing test task first
+
+In elevated PowerShell, from the test checkout:
+
+```powershell
+cd C:\Deploy\jewelry-attribute-recognition-test\service
+git status --short
+git pull --ff-only origin master
+# Stop if either Git command fails or local changes require reconciliation.
+.\configure_task.ps1 -Instance Test
+Start-ScheduledTask -TaskName JewelryAgentAPI_Test
+Get-Content .\logs\api.log -Tail 50
+Invoke-RestMethod http://127.0.0.1:8001/health
+```
+
+configure_task.ps1 requires the task to be stopped, backs up its XML in logs, preserves its principal/triggers/settings, changes only its action, and does not start it. Never point the test task at the live checkout. For a new server, first register the task using section 5 with the appropriate directory and port.
+
+Check startup logs and perform both invoice parsing and item enrichment with known samples. Confirm the Vision call targets 10.77.0.2. During an administrator-coordinated test, disable Tailscale and repeat the request. Verify firewall restrictions and VPN/task recovery after reboot before approving migration to the company server.
+
+Only after test validation, update the live checkout and run deploy.ps1 in a maintenance window. The folder called Production in this document is the current BC-connected instance on the existing server; it does not mean migration to the company server is complete.
+
+Rollback: stop the affected task, restore its exported XML using Register-ScheduledTask -Xml (Get-Content <backup.xml> -Raw) -TaskName <task-name> -Force, and restart it. Retain the original Machine environment value and Tailscale until validation is complete. Restoring the task does not restore code or changed Machine variables; restore those separately if required. Do not delete the legacy service during this transition.

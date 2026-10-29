@@ -1,28 +1,30 @@
-# deploy_test.ps1 - Run this on the server to update the TEST instance
- $ErrorActionPreference = "Stop"
+# Run from the intended instance checkout in an elevated PowerShell.
+$ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
+Get-ScheduledTask -TaskName "JewelryAgentAPI_Test" -ErrorAction Stop | Out-Null
+$dirty = git status --porcelain
+if ($LASTEXITCODE -ne 0) { throw "Cannot inspect Git working tree." }
+if ($dirty) { throw "Working tree has local changes. Review them before deployment." }
+$branch = git branch --show-current
+if ($LASTEXITCODE -ne 0 -or $branch -ne "master") { throw "Deployment requires branch master." }
+# Fetch/update before interrupting the running API.
+git pull --ff-only origin master
+if ($LASTEXITCODE -ne 0) { throw "Git update failed; scheduled task was not stopped." }
 
-Write-Host "1. Stopping existing TEST scheduled task..." -ForegroundColor Cyan
-Stop-ScheduledTask -TaskName "JewelryAgentAPI_Test" -ErrorAction SilentlyContinue | Out-Null
-
-Write-Host "2. Pulling latest code from GitHub..." -ForegroundColor Cyan
-git pull origin master
-
-Write-Host "3. Waiting for process to fully exit..." -ForegroundColor Cyan
+Stop-ScheduledTask -TaskName "JewelryAgentAPI_Test" -ErrorAction Stop
 Start-Sleep -Seconds 2
-
-Write-Host "4. Starting TEST scheduled task..." -ForegroundColor Cyan
-Start-ScheduledTask -TaskName "JewelryAgentAPI_Test" | Out-Null
-
-Write-Host "5. Waiting for startup..." -ForegroundColor Cyan
-Start-Sleep -Seconds 4
-
-Write-Host "Final Service Status:" -ForegroundColor Green
-Get-ScheduledTask -TaskName "JewelryAgentAPI_Test" | Select-Object TaskName, State
-
-Write-Host "Health Check (Port 8001):" -ForegroundColor Green
-try {
-    $health = Invoke-RestMethod -Uri "http://localhost:8001/health" -UseBasicParsing -TimeoutSec 5
-    Write-Host $health -ForegroundColor Green
-} catch {
-    Write-Host "API not responding yet." -ForegroundColor Yellow
+& (Join-Path $PSScriptRoot "configure_task.ps1") -Instance Test
+Start-ScheduledTask -TaskName "JewelryAgentAPI_Test"
+$healthy = $false
+for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    Start-Sleep -Seconds 2
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8001/health" -TimeoutSec 3
+        $healthy = $true
+        break
+    } catch { }
 }
+if (-not $healthy) { throw "API health check failed. Inspect logs/api.log. No automatic rollback was performed." }
+Get-ScheduledTask -TaskName "JewelryAgentAPI_Test" | Select-Object TaskName, State
+$health
+Write-Host "API responds on 8001. This does not verify Vision inference or Business Central."

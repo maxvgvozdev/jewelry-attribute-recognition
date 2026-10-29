@@ -191,3 +191,7 @@ Invoke-RestMethod -Method Post -Uri http://<SERVER_IP>:8001/api/jewelry/recogniz
  Confirm the BC Server firewall allows outbound HTTP traffic to the Python API server (Port 8000 for Prod, 8001 for Test).
  Test via PowerShell from the BC Server first to rule out network issues.
  Test via BC UI and confirm the user session does not freeze (thanks to Job Queues).
+
+
+Deployment network update (2026-10-29)
+The working BC implementation is maintained separately; AL snippets here are examples, not the deployed integration. API request/response contracts are unchanged by the VPN migration. On the future company server, BC and API will be colocated: use http://127.0.0.1:8000 (test: 8001) only if calls execute in the same host network. Remote or containerized BC requires separately verified addressing and firewall rules. API -> Spark uses http://10.77.0.2:11434 inside the administrator-managed encrypted VPN, replacing Tailscale. See service/ARCHITECTURE_AND_DEPLOYMENT.md for the migration and validation sequence.
