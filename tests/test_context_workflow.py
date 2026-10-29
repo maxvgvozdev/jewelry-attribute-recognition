@@ -59,6 +59,30 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.search.call_args.args[0], self.payload.source_url)
         self.assertEqual(self.search.call_args.args[1]["vendor_item_number"], "254069")
 
+    def test_upc_record_fallback_when_search_has_no_match(self):
+        from service.upc_lookup import parse_record
+        self.payload.upc_code = "825429254069"
+        self.env["_check_upc"].return_value = parse_record({"items": [{
+            "upc": self.payload.upc_code, "brand": "John Hardy",
+            "title": "Icon Bracelet", "description": "Sterling silver with Blue Sapphire"
+        }]}, self.payload.upc_code)
+        self.search.return_value = {"data": []}
+        result = self.env["run_jewelry_workflow"](self.payload, {"metal_type": "STSILVER"})
+        self.assertIn("upcitemdb.com", result["item"]["resolved_item_url"])
+        self.assertIn("Blue Sapphire", result["evidence"]["text"])
+        self.assertIn("upc_record", self.search.call_args.args[1])
+
+    def test_conflicting_upc_brand_cannot_supply_fallback(self):
+        from service.upc_lookup import parse_record
+        self.payload.upc_code = "825429254069"
+        self.env["_check_upc"].return_value = parse_record({"items": [{
+            "upc": self.payload.upc_code, "brand": "Other", "title": "Bracelet"
+        }]}, self.payload.upc_code)
+        self.search.return_value = {"data": []}
+        with self.assertRaises(HTTPException):
+            self.env["run_jewelry_workflow"](self.payload)
+        self.assertNotIn("upc_record", self.search.call_args.args[1])
+
     def test_discovery_failure_is_distinct_from_no_match(self):
         self.search.side_effect = RuntimeError("service down")
         with self.assertRaises(HTTPException) as error:
@@ -67,3 +91,4 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

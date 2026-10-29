@@ -66,10 +66,16 @@ def main():
         context = {"brand": brand, "vendor_item_number": identifier}
     deadline = time.monotonic() + 420
     urls, seen, rejected, errors = [], set(), [], []
+    record = context.get("upc_record") or {}
     if command == "scrape":
         urls = [param]
     elif command == "search":
         # Gather multiple search queries before selecting a page; never accept result #1 blindly.
+        for offer in record.get("offers", [])[:3]:
+            link = offer.get("link", "")
+            if link.startswith(("https://", "http://")) and link not in seen:
+                urls.append(link)
+                seen.add(link)
         for query in build_queries(context)[:4]:
             if time.monotonic() > deadline - 60:
                 break

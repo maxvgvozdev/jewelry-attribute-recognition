@@ -243,21 +243,8 @@ def _run_firecrawl_scrape(url: str, context: Optional[Dict[str, Any]] = None) ->
         raise RuntimeError(f"Scrape failed: {exc}")
 
 def _check_upc(upc_code: str) -> Dict[str, Any]:
-    if not upc_code:
-        return {}
-    url = f"https://www.upcitemdb.com/upc/{upc_code}"
-    try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        html = resp.text
-        if "currently has no record in our database" in html:
-            return {"found": False, "url": url}
-        title_m = re.search(r"<title>\s*UPC\s+\d+\s*-\s*(.*?)\s*\|\s*upcitemdb\.com\s*</title>", html)
-        title = title_m.group(1).strip() if title_m else ""
-        return {"found": bool(title), "title": title, "url": url}
-    except Exception as exc:
-        logger.warning("UPC check failed: %s", exc)
-        return {"found": False, "error": str(exc), "url": url}
+    from service.upc_lookup import lookup
+    return lookup(upc_code)
 
 def _download_image(url: str, dest: Path, referer: str = "") -> str:
     try:
@@ -1196,14 +1183,9 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
     page_text = ""
     item_number = vendor_item_number
 
-    if upc_code:
-        upc_result = _check_upc(upc_code)
-        if not upc_result.get("found"):
-            if not vendor_item_number and not source_url:
-                raise HTTPException(status_code=404, detail=f"UPC {upc_code} not found in UPC Item Database (upcitemdb.com).")
-            confidence_notes.append(f"UPC {upc_code} is not present in UPC Item Database; item discovery continued using vendor_item_number.")
-        else:
-            confidence_notes.append(f"UPC {upc_code} found in UPC Item Database: {upc_result.get('title', '')}")
+    upc_result = _check_upc(upc_code) if upc_code else {}
+    if upc_code and not upc_result.get("found"):
+        confidence_notes.append("UPC lookup unavailable, invalid or no exact record; continuing other discovery.")
 
     # Pass BC/invoice context to search AND candidate verification.
     from service.product_identity import make_context
@@ -1216,6 +1198,13 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
         manufacturer_item_number="",
         upc_code=upc_code, description="",
         category=category, attributes=search_attributes)
+    from service.upc_lookup import candidate_from_record
+    upc_candidate = candidate_from_record(upc_result, context)
+    if upc_result.get("found") and not upc_candidate:
+        confidence_notes.append("UPC record conflicts with BC/invoice context or lacks brand confirmation; ignored.")
+    if upc_candidate:
+        context["upc_record"] = upc_result
+        confidence_notes.append("Exact UPCitemdb record matched the supplied brand and passed context checks.")
     try:
         if source_url:
             discovery = _run_firecrawl_scrape(source_url, context)
@@ -1224,16 +1213,26 @@ def run_jewelry_workflow(payload: JewelryRequest, pre_filled_attrs: Optional[Dic
                 f"{brand} {vendor_item_number or upc_code}", context)
     except Exception:
         logger.exception("Product discovery failed")
-        raise HTTPException(status_code=502, detail="Product discovery service failed; retry later.")
+        if not upc_candidate:
+            raise HTTPException(status_code=502, detail="Product discovery service failed; retry later.")
+        discovery = {"data": []}
+        confidence_notes.append("Web discovery failed; using the checked UPCitemdb record.")
     candidates = discovery.get("data") or []
+    if not candidates and upc_candidate and not source_url:
+        candidates = [upc_candidate]
     if not candidates or not candidates[0].get("identity", {}).get("verified"):
         raise HTTPException(status_code=404, detail="No product page could be confirmed against the supplied identifiers and BC/invoice attributes. Check vendor_item_number, upc_code and source_url.")
     candidate = candidates[0]
     identity = candidate["identity"]
     resolved_url = candidate.get("url", "")
     page_text = candidate.get("description", "") or ""
+    if upc_candidate and candidate is not upc_candidate:
+        page_text = upc_candidate["description"] + "\n" + page_text
     image_urls = candidate.get("images") or []
-    confidence_notes.append("Product identity verified against page content.")
+    if not image_urls and upc_candidate:
+        image_urls = upc_candidate.get("images") or []
+        confidence_notes.append("Image source: matched UPCitemdb record.")
+    confidence_notes.append("Source: " + ("UPCitemdb exact barcode record" if candidate is upc_candidate else "verified product page"))
     confidence_notes.extend(identity.get("warnings", []))
     # This flag now represents two independent supplied identifier kinds,
     # rather than merely the presence of an input code.

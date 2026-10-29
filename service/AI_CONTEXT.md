@@ -84,3 +84,7 @@ See ARCHITECTURE_AND_DEPLOYMENT.md, VPN migration section, for current operation
 
 11. Product search update
 BC integration is assumed correct. Exchange schemas remain unchanged, including invoice output. Search and candidate verification now use existing pre_filled_attributes along with brand/vendor_item_number/upc_code; no new public fields. Prioritize explicit BC/invoice attributes over page/Vision values. See integration_with_BC.md for stricter no-match behavior and test requirements. Changes are pending test deployment.
+
+
+12. UPCitemdb integration update
+Use the structured official lookup API, free trial by default (optional server-side UPCITEMDB_API_KEY for an existing paid account). Exact barcode and brand/context checks gate secondary UPC data. Use model/title/merchant links in discovery; verified UPC description/images can provide fallback. Keep all BC request/response models unchanged and explicit prefill priority intact. See integration_with_BC.md for cache, quotas, validation and deployment limitations. No confirmed UPC record was obtained for the sample 825429254069 during development.

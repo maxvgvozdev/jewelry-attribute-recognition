@@ -89,6 +89,11 @@ def build_queries(context):
     qualifiers = [str(attrs[k]) for k in QUERY_FIELDS if attrs.get(k)]
     if attrs.get("metal_type") in METALS:
         qualifiers.append(METALS[attrs["metal_type"]])
+    record = context.get("upc_record") or {}
+    if record.get("model"):
+        queries.insert(0, brand + ' "' + record["model"].replace('"', "") + '"')
+    if record.get("title"):
+        qualifiers.append(record["title"])
     description = " ".join((context.get("description", "") + " " + " ".join(qualifiers)).split())[:180]
     if queries and description:
         queries.insert(0, queries[0] + " " + description)
