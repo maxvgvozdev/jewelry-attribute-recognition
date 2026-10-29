@@ -12,7 +12,7 @@ service/deploy_test.ps1 (PowerShell deployment script for Testing).
 Prompt to use in the new chat: "Here is my AI_CONTEXT.md file and the associated project code. Read this to understand our project state. Do not write any code yet, just acknowledge."
 
 2. Overview
-Goal: A FastAPI-based service that extracts specific jewelry AND watch attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models (Ollama) to analyze product images and text.Target Stack: Python 3, FastAPI, Uvicorn, PyMuPDF, Pillow, Firecrawl API, Ollama (remote Vision AI on "Spark").Deployment: Code is modified on a laptop in VS Code, pushed to GitHub, and deployed on a Windows Server 2025 via PowerShell scripts that pull code and restart Scheduled Tasks.
+Goal: A FastAPI-based service that extracts specific jewelry AND watch attributes for Microsoft Dynamics 365 Business Central (BC365). It uses web scraping (Firecrawl) and AI Vision models (Ollama) to analyze product images and text.Target Stack: Python 3, FastAPI, Uvicorn, PyMuPDF, Pillow, Firecrawl API, Ollama (remote Vision AI on "Spark").Deployment: All source changes are made in GitHub first, then pulled and deployed on a Windows Server 2025 via PowerShell scripts that pull code and restart Scheduled Tasks.
 
 3. Dual-Instance Architecture (Server Setup)
 To develop new features safely, the Windows Server runs two instances of the service simultaneously:
@@ -76,3 +76,7 @@ Jewelry Step 1 & 2 are fully working on Production (Port 8000).
 Watch Step 1 & 2 are fully implemented and validated on the Test Instance (Port 8001).
 The Watch schema (40+ attributes), strict validation, text heuristics fallback, and JSON repair logic are all functioning perfectly.
 NEXT PHASE: Deploy the Watch features to Production using deploy.ps1.
+
+
+10. VPN migration status (2026-10-29)
+See ARCHITECTURE_AND_DEPLOYMENT.md, VPN migration section, for current operational instructions. Administrator-managed VPN replaces Tailscale: Windows 10.77.0.1 -> Spark http://10.77.0.2:11434. TCP, /api/tags and text generation on default:latest passed. Image inference and full BC checks remain pending. No HTTPS is planned inside this encrypted VPN. BC and API will share the company server; host-local BC calls may use loopback HTTP. Migration to the company server is pending. Use Scheduled Tasks, not the legacy pywin32 service. start_api.cmd sets VPN URL and the instance port explicitly; configure_task.ps1 updates an existing stopped task with XML backup. Validate Test (8001) before changing the BC-connected Live task (8000). Existing model/provider/credentials and API contracts are preserved. Earlier statements that all functionality is fully validated are historical notes, not acceptance of this migration.

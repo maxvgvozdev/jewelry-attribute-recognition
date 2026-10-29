@@ -4,3 +4,7 @@ results/
 .DS_Store
 .vscode/
 .idea/
+.venv/
+venv/
+__pycache__/
+service/logs/

@@ -4,7 +4,8 @@ Vision analysis client for a remote Spark machine / remote model server.
 Run the vision model on a separate host and point this client at it
 using environment variables:
 
-  VISION_API_URL  - http://<spark-host>:<port>
+  VISION_API_URL  - remote base URL; deployed VPN: http://10.77.0.2:11434
+                    (set explicitly by start_api.cmd; localhost fallback unchanged)
   VISION_API_KEY  - optional bearer token
   VISION_MODEL    - model identifier on the remote server
   VISION_PROVIDER - "openai" | "ollama" | "generic"

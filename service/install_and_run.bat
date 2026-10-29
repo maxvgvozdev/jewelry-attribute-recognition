@@ -1,18 +1,8 @@
 @echo off
-setlocal
-
-:: Install dependencies
-echo Installing Python dependencies...
-pip install -r requirements.txt
-
-echo.
-echo Installing Windows service...
-python install_service.py install
-
-echo.
-echo Starting service...
-python install_service.py start
-
-echo.
-echo Done. Service should be running on %API_HOST%:%API_PORT%
-pause
+echo The legacy pywin32 installer is retired for this deployment.
+echo Use Scheduled Tasks as described in ARCHITECTURE_AND_DEPLOYMENT.md.
+echo For an existing stopped TEST task, run in elevated PowerShell:
+echo   .\configure_task.ps1 -Instance Test
+echo   Start-ScheduledTask -TaskName JewelryAgentAPI_Test
+echo This script has made no changes.
+exit /b 1
